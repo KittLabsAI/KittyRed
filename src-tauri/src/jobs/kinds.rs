@@ -1,0 +1,15 @@
+pub const MARKET_REFRESH_SYMBOLS: &str = "market_refresh_symbols";
+pub const MARKET_REFRESH_SNAPSHOTS: &str = "market_refresh_snapshots";
+pub const MARKET_REFRESH_ASSET_METADATA: &str = "market.refresh_asset_metadata";
+pub const MARKET_REFRESH_TICKERS: &str = "market.refresh_tickers";
+pub const MARKET_REBUILD_ORDERBOOK: &str = "market_rebuild_orderbook";
+pub const SPREAD_EVALUATE: &str = "spread_evaluate";
+pub const CREDENTIAL_VALIDATE: &str = "credential_validate";
+pub const PORTFOLIO_REFRESH: &str = "portfolio_refresh";
+pub const RECOMMENDATION_GENERATE: &str = "recommendation_generate";
+pub const RECOMMENDATION_EVALUATE: &str = "recommendation_evaluate";
+pub const PAPER_ORDER_MONITOR: &str = "paper_order_monitor";
+pub const PAPER_ORDER: &str = "paper.order";
+pub const ASSISTANT_RUN: &str = "assistant_run";
+pub const NOTIFICATION_DISPATCH: &str = "notification_dispatch";
+pub const SIGNAL_SCAN: &str = "signal_scan";

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-07T13:05:00+08:00",
+  "title": "Design System: KittyRed",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Night Ledger",
+        "canonical": "#06111a",
+        "tonalRamp": ["#04070c", "#06111a", "#09121d", "#0e1b2a"]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Workbench Cyan",
+        "canonical": "#8fdcff",
+        "tonalRamp": ["#0b2431", "#3a90a8", "#8fdcff", "#d7f5ff"]
+      },
+      "positive": {
+        "role": "semantic",
+        "displayName": "Signal Green",
+        "canonical": "#7ef7c4",
+        "tonalRamp": ["#0d3425", "#3fa979", "#7ef7c4", "#d7ffed"]
+      },
+      "negative": {
+        "role": "semantic",
+        "displayName": "Risk Coral",
+        "canonical": "#ff8a80",
+        "tonalRamp": ["#3b120f", "#b9473d", "#ff8a80", "#ffd9d4"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Page Display",
+        "purpose": "Page-level headings only."
+      },
+      "body": {
+        "displayName": "Product Body",
+        "purpose": "Dense Chinese product copy, helper text, and panel descriptions."
+      },
+      "label": {
+        "displayName": "Structural Label",
+        "purpose": "Compact metadata, section labels, and status hints."
+      }
+    },
+    "elevation": {
+      "surface": "0 14px 38px rgba(1, 7, 13, 0.22)",
+      "drawer": "-14px 0 42px rgba(0, 0, 0, 0.26)",
+      "modal": "0 18px 48px rgba(0, 0, 0, 0.32)"
+    },
+    "motion": {
+      "standardDuration": "160ms",
+      "standardProperties": ["background", "color", "transform"],
+      "rule": "Motion communicates state only; do not animate layout-driving properties."
+    },
+    "breakpoints": {
+      "tablet": "900px",
+      "phone": "640px"
+    },
+    "componentNotes": {
+      "sidebar": "Desktop fixed left rail at 264px. Phone breakpoint turns it into a compact sticky top nav with horizontal scrolling.",
+      "tableShell": "Use table-shell--visible-scrollbar for wide financial tables and keep numeric columns from wrapping.",
+      "drawer": "Assistant and audit drawers use panel-strong, side shadow, aria-modal, and 100vw width on phones.",
+      "settingsFields": "Settings controls should share field structure and visible height; avoid bespoke one-off checkbox rows."
+    },
+    "rules": {
+      "northStar": "The Quiet Trading Desk",
+      "dos": [
+        "Keep A-share and local simulation language visible.",
+        "Use cyan for state, not decoration.",
+        "Preserve Chinese UI copy.",
+        "Use structural breakpoints at 900px and 640px."
+      ],
+      "donts": [
+        "Do not use crypto vocabulary, CEX brands, or USDT pricing.",
+        "Do not add real brokerage or live trading affordances.",
+        "Do not use decorative glassmorphism, gradient text, or neon terminal styling.",
+        "Do not nest cards inside cards."
+      ]
+    }
+  }
+}
