@@ -60,6 +60,7 @@ mod tests {
             &paper,
             &settings,
             None,
+            None,
             &mut last_run_ms,
             600_000,
         )
@@ -133,6 +134,7 @@ mod tests {
             &settings,
             None,
             None,
+            None,
             "auto",
         )
         .await
@@ -194,6 +196,7 @@ mod tests {
             &notifications,
             &paper,
             &settings,
+            None,
             None,
             None,
             "manual",
@@ -265,6 +268,7 @@ mod tests {
             &settings,
             None,
             None,
+            None,
             "auto",
         )
         .await
@@ -333,6 +337,7 @@ mod tests {
             &notifications,
             &paper,
             &settings,
+            None,
             None,
             None,
             "auto",
@@ -408,6 +413,7 @@ mod tests {
             &notifications,
             &paper,
             &settings,
+            None,
             None,
             None,
             "auto",
@@ -675,6 +681,7 @@ mod tests {
 use std::time::Duration;
 
 use crate::jobs::{kinds, JobService};
+use crate::financial_reports::FinancialReportService;
 use crate::market::MarketDataService;
 use crate::models::{RecommendationRunDto, RuntimeSettingsDto};
 use crate::notifications::NotificationService;
@@ -696,6 +703,7 @@ pub fn spawn_auto_analyze_worker(
     recommendation_service: RecommendationService,
     notification_service: NotificationService,
     paper_service: PaperService,
+    financial_report_service: FinancialReportService,
     app_handle: tauri::AppHandle,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -710,6 +718,7 @@ pub fn spawn_auto_analyze_worker(
                 &notification_service,
                 &paper_service,
                 &settings_service,
+                Some(&financial_report_service),
                 Some(&app_handle),
                 &mut last_run_ms,
                 now_ms,
@@ -736,6 +745,7 @@ pub async fn run_auto_analyze_cycle(
     notification_service: &NotificationService,
     paper_service: &PaperService,
     settings_service: &SettingsService,
+    financial_report_service: Option<&FinancialReportService>,
     app_handle: Option<&tauri::AppHandle>,
     last_run_ms: &mut Option<i64>,
     now_ms: i64,
@@ -762,6 +772,7 @@ pub async fn run_auto_analyze_cycle(
         notification_service,
         paper_service,
         settings_service,
+        financial_report_service,
         None,
         app_handle,
         "auto",
@@ -777,6 +788,7 @@ pub async fn execute_recommendation_job(
     notification_service: &NotificationService,
     paper_service: &PaperService,
     settings_service: &SettingsService,
+    financial_report_service: Option<&FinancialReportService>,
     symbol: Option<String>,
     app_handle: Option<&tauri::AppHandle>,
     trigger_source: &str,
@@ -896,6 +908,8 @@ pub async fn execute_recommendation_job(
                 pnl_percent: position.pnl_percent,
             })
             .collect::<Vec<_>>();
+        let financial_analyses =
+            financial_analysis_contexts(financial_report_service, &runtime, &rows);
         match llm::generate_trade_plan(
             settings_service,
             market_data_service,
@@ -904,6 +918,7 @@ pub async fn execute_recommendation_job(
             symbol.as_deref(),
             &enabled_exchanges,
             &position_contexts,
+            &financial_analyses,
         )
         .await
         {
@@ -913,18 +928,18 @@ pub async fn execute_recommendation_job(
                     .map(|mut plan| {
                         plan.run.trigger_type = trigger_source.to_string();
                         RecommendationRecord {
-                        trigger_type: trigger_source.to_string(),
-                        ai_raw_output: plan.ai_raw_output,
-                        ai_structured_output: plan.ai_structured_output,
-                        risk_result: default_risk_result_json(&plan.run),
-                        market_snapshot: build_market_snapshot_json(
-                            &plan.run,
-                            &decision_rows,
-                            &enabled_exchanges,
-                            Some((&plan.system_prompt, &plan.user_prompt)),
-                        ),
-                        account_snapshot: account_snapshot.clone(),
-                        run: plan.run,
+                            trigger_type: trigger_source.to_string(),
+                            ai_raw_output: plan.ai_raw_output,
+                            ai_structured_output: plan.ai_structured_output,
+                            risk_result: default_risk_result_json(&plan.run),
+                            market_snapshot: build_market_snapshot_json(
+                                &plan.run,
+                                &decision_rows,
+                                &enabled_exchanges,
+                                Some((&plan.system_prompt, &plan.user_prompt)),
+                            ),
+                            account_snapshot: account_snapshot.clone(),
+                            run: plan.run,
                         }
                     })
                     .collect::<Vec<_>>();
@@ -952,7 +967,10 @@ pub async fn execute_recommendation_job(
 
             if runtime.auto_paper_execution && runtime.account_mode == "paper" {
                 let account_id = preferred_paper_account_id(&runtime);
-                for run in runs.iter().filter(|run| run.has_trade && run.direction.as_deref() == Some("买入")) {
+                for run in runs
+                    .iter()
+                    .filter(|run| run.has_trade && run.direction.as_deref() == Some("买入"))
+                {
                     match paper_service
                         .create_draft_from_recommendation(run, &account_id)
                         .await
@@ -969,7 +987,9 @@ pub async fn execute_recommendation_job(
 
             if runtime.notifications.recommendations {
                 for run in &runs {
-                    if let Err(error) = notification_service.dispatch_recommendation(app_handle, run) {
+                    if let Err(error) =
+                        notification_service.dispatch_recommendation(app_handle, run)
+                    {
                         message.push_str(&format!(" 通知发送失败：{error}。"));
                     }
                 }
@@ -1247,6 +1267,39 @@ fn shortlist_snapshot_from_user_prompt(user_prompt: &str) -> serde_json::Value {
         "perpetual_shortlist": perpetual_shortlist,
         "all_symbols": all_symbols,
     })
+}
+
+fn financial_analysis_contexts(
+    financial_report_service: Option<&FinancialReportService>,
+    runtime: &crate::models::RuntimeSettingsDto,
+    rows: &[crate::models::MarketListRow],
+) -> std::collections::HashMap<String, llm::FinancialAnalysisPromptContext> {
+    if !runtime.use_financial_report_data {
+        return std::collections::HashMap::new();
+    }
+    let Some(service) = financial_report_service else {
+        return std::collections::HashMap::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let snapshot = service.snapshot(&row.symbol).ok()?;
+            let analysis = snapshot.analysis?;
+            Some((
+                row.symbol.clone(),
+                llm::FinancialAnalysisPromptContext {
+                    key_summary: analysis.key_summary,
+                    positive_factors: analysis.positive_factors,
+                    negative_factors: analysis.negative_factors,
+                    fraud_risk_points: analysis.fraud_risk_points,
+                    raw_sections: snapshot
+                        .sections
+                        .into_iter()
+                        .map(|section| serde_json::json!(section))
+                        .collect(),
+                },
+            ))
+        })
+        .collect()
 }
 
 fn shortlist_symbols_from_snapshot(value: &serde_json::Value) -> std::collections::HashSet<String> {

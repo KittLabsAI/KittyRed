@@ -2,7 +2,11 @@ use serde_json::{json, Value};
 
 #[cfg(test)]
 mod tests {
-    use super::{allowed_tools, anthropic_tool_schemas, openai_tool_schemas};
+    use super::{
+        allowed_tools, anthropic_tool_schemas, openai_tool_schemas,
+        openai_tool_schemas_for_runtime,
+    };
+    use crate::settings::SettingsService;
 
     #[test]
     fn only_whitelists_safe_tools() {
@@ -11,6 +15,7 @@ mod tests {
         assert!(tools.contains(&"stock_info".to_string()));
         assert!(tools.contains(&"bid_ask".to_string()));
         assert!(tools.contains(&"kline_data".to_string()));
+        assert!(tools.contains(&"financial_report_info".to_string()));
         assert!(!tools.contains(&"spread_analyzer".to_string()));
         assert!(!tools.contains(&"coin_info".to_string()));
         assert!(!tools.contains(&"real_order_execution".to_string()));
@@ -35,17 +40,47 @@ mod tests {
         assert!(!schemas.contains("coin"));
         assert!(!schemas.contains("crypto"));
     }
+
+    #[test]
+    fn financial_report_tool_schema_follows_runtime_setting() {
+        let settings = SettingsService::default();
+        let mut runtime = settings.get_runtime_settings();
+        runtime.use_financial_report_data = false;
+        let disabled = serde_json::to_string(&openai_tool_schemas_for_runtime(&runtime)).unwrap();
+        assert!(!disabled.contains("financial_report_info"));
+
+        runtime.use_financial_report_data = true;
+        let enabled = serde_json::to_string(&openai_tool_schemas_for_runtime(&runtime)).unwrap();
+        assert!(enabled.contains("financial_report_info"));
+        assert!(enabled.contains("财报 AI 分析结论"));
+    }
 }
 
 pub fn allowed_tools() -> Vec<String> {
-    tool_specs()
+    tool_specs(true)
         .iter()
         .map(|spec| spec.name.to_string())
         .collect()
 }
 
 pub fn openai_tool_schemas() -> Vec<Value> {
-    tool_specs()
+    tool_specs(true)
+        .iter()
+        .map(|spec| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": spec.parameters,
+                }
+            })
+        })
+        .collect()
+}
+
+pub fn openai_tool_schemas_for_runtime(runtime: &crate::models::RuntimeSettingsDto) -> Vec<Value> {
+    tool_specs(runtime.use_financial_report_data)
         .iter()
         .map(|spec| {
             json!({
@@ -61,7 +96,20 @@ pub fn openai_tool_schemas() -> Vec<Value> {
 }
 
 pub fn anthropic_tool_schemas() -> Vec<Value> {
-    tool_specs()
+    tool_specs(true)
+        .iter()
+        .map(|spec| {
+            json!({
+                "name": spec.name,
+                "description": spec.description,
+                "input_schema": spec.parameters,
+            })
+        })
+        .collect()
+}
+
+pub fn anthropic_tool_schemas_for_runtime(runtime: &crate::models::RuntimeSettingsDto) -> Vec<Value> {
+    tool_specs(runtime.use_financial_report_data)
         .iter()
         .map(|spec| {
             json!({
@@ -79,8 +127,8 @@ struct ToolSpec {
     parameters: Value,
 }
 
-fn tool_specs() -> Vec<ToolSpec> {
-    vec![
+fn tool_specs(include_financial_report: bool) -> Vec<ToolSpec> {
+    let mut specs = vec![
         ToolSpec {
             name: "market_data",
             description: "读取沪深 A 股自选股缓存行情，包括股票代码、名称、最新价、涨跌幅、成交量、成交额和缓存时间；不主动刷新 AKShare。",
@@ -197,5 +245,20 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
-    ]
+    ];
+    if include_financial_report {
+        specs.push(ToolSpec {
+            name: "financial_report_info",
+            description: "读取本地缓存的 A 股原始财报数据和财报 AI 分析结论，不触发 AKShare 拉取或 AI 分析。",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "stockCode": { "type": "string", "description": "A 股代码，例如 600000、SHSE.600000 或 SZSE.000001" }
+                },
+                "required": ["stockCode"],
+                "additionalProperties": false
+            }),
+        });
+    }
+    specs
 }

@@ -174,6 +174,8 @@ describe("RecommendationsPage", () => {
     expect(screen.getByText("建议原因")).toBeInTheDocument();
     expect(screen.getByText("日线趋势向上，1h 回踩后重新放量，5m 结构确认。")).toBeInTheDocument();
     expect(screen.queryByText("股票筛选")).not.toBeInTheDocument();
+    expect(screen.queryByText("交易方向筛选")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "交易方向筛选" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "股票筛选" })).toBeInTheDocument();
     expect(screen.queryByText("10M")).not.toBeInTheDocument();
     expect(screen.queryByText("60M")).not.toBeInTheDocument();
@@ -188,6 +190,18 @@ describe("RecommendationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "生成AI建议" }));
     expect(triggerRecommendationMock).toHaveBeenCalled();
+  });
+
+  it("filters recommendation history by trade direction", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText("输入浦发银行")).toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "交易方向筛选" }), "买入");
+
+    expect(screen.getByText("输入浦发银行")).toBeInTheDocument();
+    expect(screen.queryByText("输入平安银行")).not.toBeInTheDocument();
+    expect(screen.getByText("当前显示 1 / 12 条建议。")).toBeInTheDocument();
   });
 
   it("shows a dash outcome for no-trade and blocked recommendations", async () => {

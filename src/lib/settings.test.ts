@@ -63,6 +63,10 @@ function buildSettings(): SettingsFormData {
     scanScope: "all_markets",
     watchlistSymbols: ["SHSE.600000"],
     dailyMaxAiCalls: 24,
+    useBidAskData: true,
+    useFinancialReportData: true,
+    aiKlineBarCount: 60,
+    aiKlineFrequencies: ["5m", "1h", "1d", "1w"],
     pauseAfterConsecutiveLosses: 3,
     minConfidenceScore: 60,
     allowedMarkets: "all",
@@ -117,6 +121,7 @@ describe("saveSettingsFormData", () => {
       expect.objectContaining({
         settings: expect.objectContaining({
           minVolume24h: 25000000,
+          useFinancialReportData: true,
         }),
       }),
     );

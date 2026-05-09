@@ -186,38 +186,82 @@ pub async fn get_pair_candles(
 
     let frequency = akshare_frequency(&interval);
     let count = candle_count(&interval);
-    let bars = match crate::market::akshare::fetch_history_bars(&normalized, &frequency, count) {
-        Ok(bars) => {
-            state
-                .market_data_service
-                .cache_candle_bars(&normalized, &frequency, &bars)
-                .map_err(|error| error.to_string())?;
-            bars
-        }
-        Err(error) => {
-            let cached =
-                state
-                    .market_data_service
-                    .cached_candle_bars(&normalized, &frequency, count);
-            if cached.is_empty() {
-                return Err(error.to_string());
-            }
-            cached
-        }
-    };
+    let market_type = market_type.unwrap_or_else(|| "ashare".into());
+    let exchange = exchange.unwrap_or_else(|| "akshare".into());
+    let cached = state
+        .market_data_service
+        .cached_candle_bars(&normalized, &frequency, count);
+    if !cached.is_empty() {
+        refresh_candle_cache_in_background(
+            state.market_data_service.clone(),
+            normalized.clone(),
+            frequency,
+            count,
+        );
+        return Ok(candle_series_from_bars(
+            exchange,
+            normalized,
+            market_type,
+            interval,
+            cached,
+        ));
+    }
+
+    let bars = crate::market::akshare::fetch_history_bars(&normalized, &frequency, count)
+        .map_err(|error| error.to_string())?;
+    state
+        .market_data_service
+        .cache_candle_bars(&normalized, &frequency, &bars)
+        .map_err(|error| error.to_string())?;
+
+    Ok(candle_series_from_bars(
+        exchange,
+        normalized,
+        market_type,
+        interval,
+        bars,
+    ))
+}
+
+fn candle_series_from_bars(
+    exchange: String,
+    symbol: String,
+    market_type: String,
+    interval: String,
+    bars: Vec<crate::models::OhlcvBar>,
+) -> CandleSeriesDto {
     let updated_at = bars
         .last()
         .map(|bar| bar.open_time.clone())
         .unwrap_or_default();
 
-    Ok(CandleSeriesDto {
-        exchange: exchange.unwrap_or_else(|| "akshare".into()),
-        symbol: normalized,
-        market_type: market_type.unwrap_or_else(|| "ashare".into()),
+    CandleSeriesDto {
+        exchange,
+        symbol,
+        market_type,
         interval,
         bars,
         updated_at,
-    })
+    }
+}
+
+fn refresh_candle_cache_in_background(
+    market_data_service: crate::market::MarketDataService,
+    symbol: String,
+    frequency: String,
+    count: usize,
+) {
+    tauri::async_runtime::spawn(async move {
+        let fetch_symbol = symbol.clone();
+        let fetch_frequency = frequency.clone();
+        let fetched = tokio::task::spawn_blocking(move || {
+            crate::market::akshare::fetch_history_bars(&fetch_symbol, &fetch_frequency, count)
+        })
+        .await;
+        if let Ok(Ok(bars)) = fetched {
+            let _ = market_data_service.cache_candle_bars(&symbol, &frequency, &bars);
+        }
+    });
 }
 
 #[tauri::command]

@@ -41,6 +41,14 @@ mod tests {
         SignalService::new(tmp).unwrap()
     }
 
+    fn test_financial_report_service() -> crate::financial_reports::FinancialReportService {
+        crate::financial_reports::FinancialReportService::new(unique_temp_path(
+            "assistant-financial-reports",
+            "sqlite3",
+        ))
+        .unwrap()
+    }
+
     #[test]
     fn stop_marks_session_cancelled() {
         let service = AssistantService::new_for_tests(VecEmitter::default());
@@ -130,6 +138,7 @@ mod tests {
             &recommendations,
             &settings,
             &test_signal_service(),
+            &test_financial_report_service(),
         )
         .await
         .expect("market data tool should resolve cached A-share row");
@@ -189,6 +198,7 @@ mod tests {
             &recommendations,
             &settings,
             &test_signal_service(),
+            &test_financial_report_service(),
         )
         .await
         .expect("market data tool should resolve stock code");
@@ -199,6 +209,99 @@ mod tests {
         assert_eq!(payload["rows"][0]["source"], json!("akshare"));
         assert!(payload["rows"][0].get("symbol").is_none());
         assert!(payload["rows"][0].get("funding_rate").is_none());
+
+        let _ = std::fs::remove_file(settings_path);
+        let _ = std::fs::remove_file(recommendation_path);
+    }
+
+    #[tokio::test]
+    async fn financial_report_tool_returns_cached_analysis_without_fetching() {
+        let settings_path = unique_temp_path("assistant-settings-financial", "json");
+        let recommendation_path = unique_temp_path("assistant-recommendations-financial", "sqlite3");
+        let settings = SettingsService::new(settings_path.clone());
+        let mut runtime = settings.get_runtime_settings();
+        runtime.use_financial_report_data = true;
+        settings.save_runtime_settings(runtime.clone()).unwrap();
+        let market_data = MarketDataService::with_static_rows(Vec::new());
+        let paper = PaperService::default();
+        let portfolio = PortfolioService::new(paper.clone());
+        let recommendations = RecommendationService::new(recommendation_path.clone());
+        let financial_reports = test_financial_report_service();
+        let revision = financial_reports
+            .snapshot("SHSE.600000")
+            .unwrap()
+            .source_revision;
+        financial_reports
+            .save_analysis(
+                "SHSE.600000",
+                &revision,
+                "收入和利润稳定",
+                "现金流改善",
+                "费用率上升",
+                "暂无明显异常",
+                &runtime,
+            )
+            .unwrap();
+
+        let result = execute_tool(
+            "financial_report_info",
+            json!({ "stockCode": "600000" }),
+            &market_data,
+            &portfolio,
+            &paper,
+            &recommendations,
+            &settings,
+            &test_signal_service(),
+            &financial_reports,
+        )
+        .await
+        .unwrap();
+        let payload: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(payload["ok"], json!(true));
+        assert_eq!(payload["stockCode"], json!("SHSE.600000"));
+        assert_eq!(payload["analysis"]["关键信息总结"], json!("收入和利润稳定"));
+        assert!(payload.get("raw").is_none());
+
+        let _ = std::fs::remove_file(settings_path);
+        let _ = std::fs::remove_file(recommendation_path);
+    }
+
+    #[tokio::test]
+    async fn financial_report_tool_reports_missing_cache_in_chinese() {
+        let settings_path = unique_temp_path("assistant-settings-financial-empty", "json");
+        let recommendation_path =
+            unique_temp_path("assistant-recommendations-financial-empty", "sqlite3");
+        let settings = SettingsService::new(settings_path.clone());
+        let mut runtime = settings.get_runtime_settings();
+        runtime.use_financial_report_data = true;
+        settings.save_runtime_settings(runtime).unwrap();
+        let market_data = MarketDataService::with_static_rows(Vec::new());
+        let paper = PaperService::default();
+        let portfolio = PortfolioService::new(paper.clone());
+        let recommendations = RecommendationService::new(recommendation_path.clone());
+        let financial_reports = test_financial_report_service();
+
+        let result = execute_tool(
+            "financial_report_info",
+            json!({ "stockCode": "600000" }),
+            &market_data,
+            &portfolio,
+            &paper,
+            &recommendations,
+            &settings,
+            &test_signal_service(),
+            &financial_reports,
+        )
+        .await
+        .unwrap();
+        let payload: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(payload["ok"], json!(false));
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("财报分析页面"));
 
         let _ = std::fs::remove_file(settings_path);
         let _ = std::fs::remove_file(recommendation_path);
@@ -265,6 +368,7 @@ mod tests {
             &recommendations,
             &settings,
             &test_signal_service(),
+            &test_financial_report_service(),
         )
         .await
         .expect("positions tool should return combined portfolio positions");
@@ -329,6 +433,7 @@ mod tests {
             &recommendations,
             &settings,
             &test_signal_service(),
+            &test_financial_report_service(),
         )
         .await
         .expect("recommendation history tool should resolve latest filtered symbol");
@@ -388,6 +493,7 @@ mod tests {
             &recommendations,
             &settings,
             &test_signal_service(),
+            &test_financial_report_service(),
         )
         .await
         .expect("risk calculator should resolve requested symbol");
@@ -501,6 +607,7 @@ use tauri::Emitter;
 use self::context::{
     estimate_context, AssistantStoredMessage, ThinkBlockStreamFilter, ThinkStreamEvent,
 };
+use crate::financial_reports::FinancialReportService;
 use crate::market::{akshare, MarketDataService};
 use crate::models::RecommendationRunDto;
 use crate::paper::{paper_account_id, PaperService};
@@ -636,6 +743,7 @@ impl AssistantService {
         recommendation_service: RecommendationService,
         settings_service: SettingsService,
         signal_service: SignalService,
+        financial_report_service: FinancialReportService,
     ) {
         let service = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -649,6 +757,7 @@ impl AssistantService {
                     &recommendation_service,
                     &settings_service,
                     &signal_service,
+                    &financial_report_service,
                 )
                 .await
             {
@@ -734,6 +843,7 @@ impl AssistantService {
         recommendation_service: &RecommendationService,
         settings_service: &SettingsService,
         signal_service: &SignalService,
+        financial_report_service: &FinancialReportService,
     ) -> anyhow::Result<()> {
         let api_key = settings_service
             .model_api_key()?
@@ -755,8 +865,8 @@ impl AssistantService {
                 return Ok(());
             }
 
-            let openai_tools = tools::openai_tool_schemas();
-            let anthropic_tools = tools::anthropic_tool_schemas();
+            let openai_tools = tools::openai_tool_schemas_for_runtime(&runtime);
+            let anthropic_tools = tools::anthropic_tool_schemas_for_runtime(&runtime);
             let is_anthropic = runtime
                 .model_provider
                 .eq_ignore_ascii_case("anthropic-compatible");
@@ -880,6 +990,7 @@ impl AssistantService {
                     recommendation_service,
                     settings_service,
                     signal_service,
+                    financial_report_service,
                 )
                 .await
                 {
@@ -1069,6 +1180,7 @@ async fn execute_tool(
     recommendation_service: &RecommendationService,
     settings_service: &SettingsService,
     signal_service: &SignalService,
+    financial_report_service: &FinancialReportService,
 ) -> anyhow::Result<String> {
     let enabled_exchanges = settings_service.enabled_exchanges();
     match name {
@@ -1332,6 +1444,43 @@ async fn execute_tool(
                 "klines": akshare::fetch_multi_frequency_bars(&symbol, count)?,
             })
             .to_string())
+        }
+        "financial_report_info" => {
+            if !settings_service.get_runtime_settings().use_financial_report_data {
+                return Ok(json!({
+                    "ok": false,
+                    "message": "设置中尚未启用使用财报数据。请先在设置的 AI交易 中开启使用财报数据。"
+                })
+                .to_string());
+            }
+            let symbol = resolved_symbol(optional_stock_code(&arguments), market_data_service, &enabled_exchanges)
+                .or_else(|| optional_stock_code(&arguments))
+                .ok_or_else(|| anyhow!("financial_report_info requires stockCode"))?;
+            let snapshot = financial_report_service.snapshot(&symbol)?;
+            match snapshot.analysis {
+                Some(analysis) => Ok(json!({
+                    "ok": true,
+                    "stockCode": analysis.stock_code,
+                    "analysis": {
+                        "关键信息总结": analysis.key_summary,
+                        "财报正向因素": analysis.positive_factors,
+                        "财报负向因素": analysis.negative_factors,
+                        "财报造假嫌疑点": analysis.fraud_risk_points
+                    },
+                    "rawSections": snapshot.sections,
+                    "sourceRevision": analysis.source_revision,
+                    "generatedAt": analysis.generated_at,
+                    "message": "已读取本地缓存的财报原始数据和 AI 分析结论。"
+                })
+                .to_string()),
+                None => Ok(json!({
+                    "ok": false,
+                    "stockCode": symbol,
+                    "rawSections": snapshot.sections,
+                    "message": "暂无该股票的财报 AI 分析缓存。请先在财报分析页面拉取全量财报并分析自选股票池。"
+                })
+                .to_string()),
+            }
         }
         unknown => bail!("unsupported assistant tool: {unknown}"),
     }
@@ -1721,13 +1870,16 @@ async fn resolve_recommendation_for_symbol(
         return Ok(latest.into_iter().next());
     };
 
-    if latest
-        .iter()
-        .any(|run| run.symbol.as_deref().is_some_and(|item| item.eq_ignore_ascii_case(symbol)))
-    {
-        return Ok(latest
-            .into_iter()
-            .find(|run| run.symbol.as_deref().is_some_and(|item| item.eq_ignore_ascii_case(symbol))));
+    if latest.iter().any(|run| {
+        run.symbol
+            .as_deref()
+            .is_some_and(|item| item.eq_ignore_ascii_case(symbol))
+    }) {
+        return Ok(latest.into_iter().find(|run| {
+            run.symbol
+                .as_deref()
+                .is_some_and(|item| item.eq_ignore_ascii_case(symbol))
+        }));
     }
 
     if let Some(history_row) = history_hint {

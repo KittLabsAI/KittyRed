@@ -2,10 +2,12 @@
 
 mod app_state;
 mod assistant;
+mod backtest;
 mod commands;
 mod db;
 mod errors;
 mod events;
+mod financial_reports;
 mod jobs;
 mod market;
 mod models;
@@ -60,10 +62,36 @@ pub fn run() {
             commands::paper::list_paper_accounts,
             commands::paper::list_paper_orders,
             commands::paper::create_paper_order_from_recommendation,
+            commands::paper::close_paper_position,
+            commands::paper::reset_paper_account,
             commands::paper::create_manual_paper_order,
             commands::assistant::start_assistant_run,
             commands::assistant::stop_assistant_run,
             commands::assistant::clear_assistant_session,
+            commands::backtest::create_backtest_dataset,
+            commands::backtest::start_fetch_snapshots,
+            commands::backtest::cancel_fetch_snapshots,
+            commands::backtest::list_backtest_datasets,
+            commands::backtest::get_backtest_fetch_progress,
+            commands::backtest::list_backtest_fetch_failures,
+            commands::backtest::delete_backtest_dataset,
+            commands::backtest::create_backtest,
+            commands::backtest::start_backtest,
+            commands::backtest::start_generate_backtest_signals,
+            commands::backtest::start_replay_backtest,
+            commands::backtest::cancel_backtest,
+            commands::backtest::list_backtest_runs,
+            commands::backtest::list_backtest_signals,
+            commands::backtest::list_backtest_trades,
+            commands::backtest::get_backtest_summary,
+            commands::backtest::delete_backtest,
+            commands::financial_reports::start_financial_report_fetch,
+            commands::financial_reports::cancel_financial_report_fetch,
+            commands::financial_reports::get_financial_report_fetch_progress,
+            commands::financial_reports::get_financial_report_overview,
+            commands::financial_reports::get_financial_report_snapshot,
+            commands::financial_reports::get_financial_report_analysis,
+            commands::financial_reports::start_financial_report_analysis,
             commands::signals::scan_signals,
             commands::signals::list_signal_history,
             commands::signals::execute_signal,

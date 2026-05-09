@@ -27,6 +27,7 @@ pub async fn trigger_recommendation(
         &state.notification_service,
         &state.paper_service,
         &state.settings_service,
+        Some(&state.financial_report_service),
         symbol,
         Some(&app_handle),
         "manual",

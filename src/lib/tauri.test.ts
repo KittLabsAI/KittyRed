@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { listArbitrageOpportunities } from "./tauri";
+import {
+  cancelFinancialReportFetch,
+  getFinancialReportAnalysis,
+  getFinancialReportFetchProgress,
+  getFinancialReportOverview,
+  getFinancialReportSnapshot,
+  listArbitrageOpportunities,
+  startFinancialReportAnalysis,
+  startFinancialReportFetch,
+} from "./tauri";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -86,6 +95,90 @@ describe("listArbitrageOpportunities", () => {
       page: 1,
       pageSize: 25,
       totalPages: 1,
+    });
+  });
+});
+
+describe("financial report tauri bridge", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+  });
+
+  it("invokes financial report fetch and cancel commands without stock selection", async () => {
+    mocks.invoke.mockResolvedValue(undefined);
+
+    await startFinancialReportFetch();
+    await cancelFinancialReportFetch();
+    await startFinancialReportAnalysis();
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "start_financial_report_fetch");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "cancel_financial_report_fetch");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "start_financial_report_analysis");
+  });
+
+  it("reads financial report progress, overview, snapshot, and cached analysis", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce({
+        stockCode: "ALL",
+        status: "running",
+        completedSections: 3,
+        totalSections: 6,
+        message: "正在缓存 现金流量表",
+        errorMessage: null,
+      })
+      .mockResolvedValueOnce({
+        stockCount: 2,
+        rowCount: 10,
+        refreshedAt: "2026-05-08T10:00:00+08:00",
+        sections: [],
+        analyses: [],
+      })
+      .mockResolvedValueOnce({
+        stockCode: "SHSE.600000",
+        sections: [],
+        sourceRevision: "rev-1",
+        refreshedAt: "2026-05-08T10:00:00+08:00",
+        analysis: null,
+      })
+      .mockResolvedValueOnce({
+        stockCode: "SHSE.600000",
+        sourceRevision: "rev-1",
+        keySummary: "经营稳定。",
+        positiveFactors: "现金流改善。",
+        negativeFactors: "费用承压。",
+        fraudRiskPoints: "暂无明显异常。",
+        generatedAt: "2026-05-08T10:05:00+08:00",
+        stale: false,
+      });
+
+    await expect(getFinancialReportFetchProgress()).resolves.toMatchObject({
+      status: "running",
+      completedSections: 3,
+    });
+    await expect(getFinancialReportOverview()).resolves.toMatchObject({
+      stockCount: 2,
+      rowCount: 10,
+    });
+    await expect(getFinancialReportSnapshot("SHSE.600000")).resolves.toMatchObject({
+      stockCode: "SHSE.600000",
+      sourceRevision: "rev-1",
+    });
+    await expect(getFinancialReportAnalysis("SHSE.600000")).resolves.toMatchObject({
+      keySummary: "经营稳定。",
+      fraudRiskPoints: "暂无明显异常。",
+    });
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "get_financial_report_fetch_progress");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "get_financial_report_overview");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "get_financial_report_snapshot", {
+      stockCode: "SHSE.600000",
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(4, "get_financial_report_analysis", {
+      stockCode: "SHSE.600000",
     });
   });
 });

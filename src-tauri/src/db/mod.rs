@@ -44,6 +44,30 @@ mod tests {
 
         assert!(tables.contains(&"market_candle_cache".to_string()));
     }
+
+    #[test]
+    fn creates_backtest_tables() {
+        let db = Database::in_memory().unwrap();
+        db.run_migrations().unwrap();
+        let tables = db.list_tables().unwrap();
+
+        assert!(tables.contains(&"backtest_datasets".to_string()));
+        assert!(tables.contains(&"backtest_fetch_failures".to_string()));
+        assert!(tables.contains(&"backtest_snapshots".to_string()));
+        assert!(tables.contains(&"backtest_runs".to_string()));
+        assert!(tables.contains(&"backtest_signals".to_string()));
+        assert!(tables.contains(&"backtest_trades".to_string()));
+    }
+
+    #[test]
+    fn creates_financial_report_tables() {
+        let db = Database::in_memory().unwrap();
+        db.run_migrations().unwrap();
+        let tables = db.list_tables().unwrap();
+
+        assert!(tables.contains(&"financial_report_cache".to_string()));
+        assert!(tables.contains(&"financial_report_analysis_cache".to_string()));
+    }
 }
 
 pub struct Database {
@@ -90,8 +114,14 @@ impl Database {
             .execute_batch(include_str!("migrations/0009_a_share_symbols.sql"))?;
         self.connection
             .execute_batch(include_str!("migrations/0010_candle_cache.sql"))?;
+        self.connection
+            .execute_batch(include_str!("migrations/0011_backtest.sql"))?;
+        self.connection
+            .execute_batch(include_str!("migrations/0012_financial_reports.sql"))?;
         self.run_market_cache_arbitrage_migration()?;
         self.run_market_cache_base_asset_migration()?;
+        self.run_backtest_progress_migration()?;
+        self.run_backtest_ai_data_migration()?;
         Ok(())
     }
 
@@ -144,6 +174,52 @@ impl Database {
             ) {
                 if !error.to_string().contains("duplicate column name") {
                     return Err(error.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_backtest_progress_migration(&self) -> anyhow::Result<()> {
+        let columns = [
+            (
+                "total_ai_calls",
+                "ALTER TABLE backtest_runs ADD COLUMN total_ai_calls INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "processed_ai_calls",
+                "ALTER TABLE backtest_runs ADD COLUMN processed_ai_calls INTEGER NOT NULL DEFAULT 0",
+            ),
+        ];
+        for (column, statement) in columns {
+            if !self.has_column("backtest_runs", column)? {
+                if let Err(error) = self.connection.execute_batch(statement) {
+                    if !error.to_string().contains("duplicate column name") {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_backtest_ai_data_migration(&self) -> anyhow::Result<()> {
+        let columns = [
+            (
+                "kline_data_json",
+                "ALTER TABLE backtest_snapshots ADD COLUMN kline_data_json TEXT NOT NULL DEFAULT '{}'",
+            ),
+            (
+                "bid_ask_json",
+                "ALTER TABLE backtest_snapshots ADD COLUMN bid_ask_json TEXT",
+            ),
+        ];
+        for (column, statement) in columns {
+            if !self.has_column("backtest_snapshots", column)? {
+                if let Err(error) = self.connection.execute_batch(statement) {
+                    if !error.to_string().contains("duplicate column name") {
+                        return Err(error.into());
+                    }
                 }
             }
         }

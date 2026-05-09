@@ -16,10 +16,14 @@ class AkshareAdapter:
         client: Any,
         now: Callable[[], datetime] | None = None,
         quote_attempts: int = 2,
+        history_attempts: int = 3,
+        history_retry_backoff_seconds: float = 0.25,
     ):
         self.client = client
         self.now = now or datetime.now
         self.quote_attempts = max(1, quote_attempts)
+        self.history_attempts = max(1, history_attempts)
+        self.history_retry_backoff_seconds = max(0, history_retry_backoff_seconds)
 
     def current_quote(self, symbol: str) -> dict[str, Any]:
         clean_symbol = self._normalize_symbol(symbol)
@@ -87,10 +91,12 @@ class AkshareAdapter:
         end = self.now()
         start = end - timedelta(days=max(count, 1) + 60)
         if self._is_intraday_frequency(frequency):
-            rows = self.client.stock_zh_a_minute(
-                symbol=self._akshare_daily_symbol(clean_symbol),
-                period=self._akshare_minute_period(frequency),
-                adjust="",
+            rows = self._retry_history_request(
+                lambda: self.client.stock_zh_a_minute(
+                    symbol=self._akshare_daily_symbol(clean_symbol),
+                    period=self._akshare_minute_period(frequency),
+                    adjust="",
+                )
             )
             return self._sina_minute_rows_to_bars(rows.tail(max(count, 1)))
 
@@ -208,6 +214,46 @@ class AkshareAdapter:
             "source": "akshare",
         }
 
+    def financial_reports(self, symbol: str = "", years: int = 2) -> dict[str, Any]:
+        clean_symbol = self._normalize_symbol(symbol) if symbol.strip() else ""
+        years = max(1, int(years or 2))
+        cutoff = self.now() - timedelta(days=365 * years)
+        report_dates = self._financial_report_dates(years)
+        sections = []
+        for section, label, endpoint in self._financial_report_specs():
+            rows: list[dict[str, Any]] = []
+            errors: list[str] = []
+            for report_date in report_dates:
+                try:
+                    frame = getattr(self.client, endpoint)(date=report_date)
+                except TypeError:
+                    try:
+                        frame = getattr(self.client, endpoint)(report_date)
+                    except Exception as error:
+                        errors.append(str(error))
+                        continue
+                except Exception as error:
+                    errors.append(str(error))
+                    continue
+                rows.extend(self._financial_rows(frame, clean_symbol, cutoff))
+            rows = self._dedupe_financial_rows(rows)
+            sections.append(
+                {
+                    "section": section,
+                    "label": label,
+                    "source": f"akshare:{endpoint}",
+                    "rows": rows,
+                    "error": f"{label}读取失败：{'; '.join(errors)}" if errors and not rows else "",
+                }
+            )
+        return {
+            "stock_code": clean_symbol or "ALL",
+            "years": years,
+            "sections": sections,
+            "source": "akshare",
+            "fetched_at": self.now().isoformat(),
+        }
+
     def _parallel_kline_requests(
         self,
         requests: dict[str, Callable[[], list[dict[str, Any]]]],
@@ -322,6 +368,19 @@ class AkshareAdapter:
     def _uses_default_akshare_client(self) -> bool:
         return getattr(self.client, "__name__", "") == "akshare"
 
+    def _retry_history_request(self, load: Callable[[], Any]) -> Any:
+        last_error: Exception | None = None
+        for attempt in range(self.history_attempts):
+            try:
+                return load()
+            except Exception as error:
+                last_error = error
+                if attempt + 1 < self.history_attempts and self.history_retry_backoff_seconds:
+                    time.sleep(self.history_retry_backoff_seconds * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+        return load()
+
     def _merge_realtime_bars(
         self,
         symbol: str,
@@ -380,6 +439,105 @@ class AkshareAdapter:
 
     def submit_order(self, symbol: str, side: str, quantity: int) -> dict[str, Any]:
         raise NotImplementedError("AKShare is a market data source, not a trading engine")
+
+    def _financial_report_specs(self) -> list[tuple[str, str, str]]:
+        return [
+            ("performance_report", "业绩报表", "stock_yjbb_em"),
+            ("performance_express", "业绩快报", "stock_yjkb_em"),
+            ("performance_forecast", "业绩预告", "stock_yjyg_em"),
+            ("balance_sheet", "资产负债表", "stock_zcfz_em"),
+            ("income_statement", "利润表", "stock_lrb_em"),
+            ("cash_flow_statement", "现金流量表", "stock_xjll_em"),
+        ]
+
+    def _financial_report_dates(self, years: int) -> list[str]:
+        now = self.now()
+        cutoff = now - timedelta(days=365 * max(1, int(years or 2)))
+        current_year = now.year
+        dates = []
+        for year in range(current_year, current_year - years - 1, -1):
+            for suffix in ("1231", "0930", "0630", "0331"):
+                report_date = datetime.strptime(f"{year}{suffix}", "%Y%m%d")
+                if cutoff <= report_date <= now:
+                    dates.append(f"{year}{suffix}")
+        return dates
+
+    def _financial_rows(
+        self,
+        frame: pd.DataFrame,
+        symbol: str,
+        cutoff: datetime,
+    ) -> list[dict[str, Any]]:
+        code = self._akshare_code(symbol)
+        rows = []
+        for _, row in frame.iterrows():
+            raw = {
+                str(key): self._json_safe_value(value)
+                for key, value in row.to_dict().items()
+            }
+            row_code = self._financial_row_code(raw)
+            if symbol and row_code and row_code != code:
+                continue
+            report_date = self._financial_report_date(raw)
+            if report_date:
+                try:
+                    parsed_date = datetime.strptime(report_date, "%Y-%m-%d")
+                    if parsed_date < cutoff:
+                        continue
+                except ValueError:
+                    pass
+            rows.append(
+                {
+                    "stock_code": self._internal_symbol(row_code) if row_code else symbol,
+                    "report_date": report_date,
+                    "stock_name": str(raw.get("股票简称", raw.get("名称", raw.get("SECURITY_NAME_ABBR", "")))).strip(),
+                    "raw": raw,
+                }
+            )
+        return rows
+
+    def _dedupe_financial_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen = set()
+        deduped = []
+        for row in rows:
+            key = json.dumps(row.get("raw", {}), ensure_ascii=False, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        return sorted(deduped, key=lambda item: item.get("report_date") or "", reverse=True)
+
+    def _financial_row_code(self, raw: dict[str, Any]) -> str:
+        for key in ("股票代码", "代码", "SECURITY_CODE", "股票代码".encode().decode()):
+            value = str(raw.get(key, "")).strip()
+            digits = "".join(ch for ch in value if ch.isdigit())
+            if digits:
+                return digits.zfill(6)
+        return ""
+
+    def _financial_report_date(self, raw: dict[str, Any]) -> str:
+        for key in ("报告期", "公告日期", "REPORT_DATE", "报告日期", "日期"):
+            value = raw.get(key)
+            if value in (None, ""):
+                continue
+            text = self._date_string(value)
+            digits = "".join(ch for ch in text if ch.isdigit())
+            if len(digits) >= 8:
+                return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+            return text[:10]
+        return ""
+
+    def _json_safe_value(self, value: Any) -> Any:
+        if pd.isna(value):
+            return None
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                pass
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value
 
     def _stock_bid_ask(self, code: str) -> pd.DataFrame:
         last_error = None

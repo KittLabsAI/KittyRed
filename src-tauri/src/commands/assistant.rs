@@ -35,6 +35,7 @@ pub async fn start_assistant_run(
         state.recommendation_service.clone(),
         state.settings_service.clone(),
         state.signal_service.clone(),
+        state.financial_report_service.clone(),
     );
     Ok(AssistantCommandAck { started: true })
 }

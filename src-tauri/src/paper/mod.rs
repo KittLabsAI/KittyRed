@@ -3,7 +3,7 @@ pub mod risk;
 
 #[cfg(test)]
 mod tests {
-    use super::{PaperOrderInput, PaperService};
+    use super::{PaperOrderInput, PaperPosition, PaperService};
     use crate::models::{MarketListRow, RecommendationRunDto};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -142,7 +142,7 @@ mod tests {
             has_trade: true,
             symbol: Some("SZSE.000001".into()),
             stock_name: Some("平安银行".into()),
-            direction: Some("Short".into()),
+            direction: Some("Long".into()),
             market_type: "ashare".into(),
             exchanges: vec!["akshare".into()],
             confidence_score: 82.0,
@@ -176,7 +176,7 @@ mod tests {
                 account_id: "paper-cash".into(),
                 symbol: "SZSE.000001".into(),
                 market_type: "ashare".into(),
-                side: "sell".into(),
+                side: "buy".into(),
                 quantity: 500.0 / 3410.0,
                 entry_price: 3410.0,
                 leverage: 2.0,
@@ -189,6 +189,121 @@ mod tests {
         assert_eq!(recommendation_draft.side, manual_draft.side);
         assert_eq!(recommendation_draft.quantity, manual_draft.quantity);
         assert_eq!(service.list_positions_snapshot().len(), 2);
+    }
+
+    #[test]
+    fn sell_paper_order_closes_existing_a_share_position() {
+        let service = PaperService::default();
+
+        futures::executor::block_on(service.create_paper_order(PaperOrderInput {
+            account_id: "paper-cash".into(),
+            symbol: "SHSE.600000".into(),
+            market_type: "ashare".into(),
+            side: "buy".into(),
+            quantity: 100.0,
+            entry_price: 8.0,
+            leverage: 1.0,
+            stop_loss: None,
+            take_profit: None,
+            updated_at: "2026-05-07T10:00:00+08:00".into(),
+        }))
+        .expect("buy order should open a position");
+
+        let sell = futures::executor::block_on(service.create_paper_order(PaperOrderInput {
+            account_id: "paper-cash".into(),
+            symbol: "SHSE.600000".into(),
+            market_type: "ashare".into(),
+            side: "sell".into(),
+            quantity: 100.0,
+            entry_price: 9.0,
+            leverage: 1.0,
+            stop_loss: None,
+            take_profit: None,
+            updated_at: "2026-05-07T10:30:00+08:00".into(),
+        }))
+        .expect("sell order should close the position");
+
+        assert_eq!(sell.side, "sell");
+        assert!(service.list_positions_snapshot().is_empty());
+        assert_eq!(
+            service.list_accounts_snapshot()[0].available_usdt,
+            1_000_100.0
+        );
+        let orders = service.list_orders_snapshot();
+        assert_eq!(orders.len(), 2);
+        assert_eq!(orders[0].status, "Filled");
+        assert_eq!(orders[0].realized_pnl_usdt, Some(100.0));
+        assert_eq!(orders[1].status, "Closed Manual Sell");
+    }
+
+    #[test]
+    fn close_position_clears_legacy_observation_position() {
+        let service = PaperService::default();
+        {
+            let mut state = service.state.write().expect("paper state lock should work");
+            state
+                .accounts
+                .get_mut("paper-cash")
+                .expect("default account should exist")
+                .available_usdt -= 800.0;
+            state.positions.push(PaperPosition {
+                entry_order_id: "PO-0001".into(),
+                account_id: "paper-cash".into(),
+                exchange: "人民币现金".into(),
+                symbol: "SHSE.600000".into(),
+                market_type: "ashare".into(),
+                side: "Short".into(),
+                quantity: 100.0,
+                entry_price: 8.0,
+                mark_price: 7.5,
+                leverage: 1.0,
+                margin_usdt: 800.0,
+                stop_loss: None,
+                take_profit: None,
+                updated_at: "2026-05-07T10:00:00+08:00".into(),
+            });
+        }
+
+        let close = futures::executor::block_on(
+            service.close_position("PO-0001", "2026-05-07T10:30:00+08:00".into()),
+        )
+        .expect("legacy observation position should close");
+
+        assert_eq!(close.side, "sell");
+        assert!(service.list_positions_snapshot().is_empty());
+        assert_eq!(
+            service.list_accounts_snapshot()[0].available_usdt,
+            1_000_050.0
+        );
+    }
+
+    #[test]
+    fn reset_paper_account_restores_cash_and_clears_positions_and_orders() {
+        let service = PaperService::default();
+        futures::executor::block_on(service.create_paper_order(PaperOrderInput {
+            account_id: "paper-cash".into(),
+            symbol: "SHSE.600000".into(),
+            market_type: "ashare".into(),
+            side: "buy".into(),
+            quantity: 100.0,
+            entry_price: 8.0,
+            leverage: 1.0,
+            stop_loss: None,
+            take_profit: None,
+            updated_at: "2026-05-07T10:00:00+08:00".into(),
+        }))
+        .expect("buy order should open a position");
+
+        service
+            .reset_account()
+            .expect("paper account reset should succeed");
+
+        assert!(service.list_positions_snapshot().is_empty());
+        assert!(service.list_orders_snapshot().is_empty());
+        assert_eq!(
+            service.list_accounts_snapshot()[0].available_usdt,
+            1_000_000.0
+        );
     }
 
     #[test]
@@ -481,6 +596,15 @@ impl PaperService {
             .collect()
     }
 
+    pub fn reset_account(&self) -> anyhow::Result<()> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow!("failed to lock paper state"))?;
+        *state = default_paper_state();
+        self.persist_state(&state)
+    }
+
     pub async fn create_draft_from_recommendation(
         &self,
         recommendation: &RecommendationRunDto,
@@ -535,15 +659,12 @@ impl PaperService {
         if input.entry_price <= 0.0 {
             bail!("paper order entry price must be positive");
         }
+        if input.side.eq_ignore_ascii_case("sell") || input.side.eq_ignore_ascii_case("short") {
+            return self.close_position_by_order(input).await;
+        }
 
         let leverage = input.leverage.max(1.0);
-        let direction = if input.side.eq_ignore_ascii_case("sell")
-            || input.side.eq_ignore_ascii_case("short")
-        {
-            "Short"
-        } else {
-            "Long"
-        };
+        let direction = "Long";
 
         let mut state = self
             .state
@@ -557,10 +678,7 @@ impl PaperService {
 
             let required_cash = input.quantity * input.entry_price;
             if account.available_usdt + f64::EPSILON < required_cash {
-                bail!(
-                    "模拟账户 {} 可用人民币资金不足",
-                    account.exchange
-                );
+                bail!("模拟账户 {} 可用人民币资金不足", account.exchange);
             }
 
             account.available_usdt -= required_cash;
@@ -621,6 +739,56 @@ impl PaperService {
             stop_loss: input.stop_loss,
             take_profit: input.take_profit,
         })
+    }
+
+    pub async fn close_position(
+        &self,
+        position_id: &str,
+        updated_at: String,
+    ) -> anyhow::Result<PaperOrderDraftDto> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow!("failed to lock paper state"))?;
+        let index = state
+            .positions
+            .iter()
+            .position(|position| position.entry_order_id == position_id)
+            .ok_or_else(|| anyhow!("模拟持仓不存在或已清仓"))?;
+        let quantity = state.positions[index].quantity;
+        let exit_price = state.positions[index].mark_price;
+        let draft = close_position_at_index(&mut state, index, quantity, exit_price, &updated_at)?;
+        self.persist_state(&state)?;
+        Ok(draft)
+    }
+
+    async fn close_position_by_order(
+        &self,
+        input: PaperOrderInput,
+    ) -> anyhow::Result<PaperOrderDraftDto> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow!("failed to lock paper state"))?;
+        let index = state
+            .positions
+            .iter()
+            .position(|position| {
+                position.account_id == input.account_id
+                    && position.symbol == input.symbol
+                    && position.market_type == input.market_type
+                    && position.side.eq_ignore_ascii_case("Long")
+            })
+            .ok_or_else(|| anyhow!("没有可卖出的模拟持仓：{}", input.symbol))?;
+        let draft = close_position_at_index(
+            &mut state,
+            index,
+            input.quantity,
+            input.entry_price,
+            &input.updated_at,
+        )?;
+        self.persist_state(&state)?;
+        Ok(draft)
     }
 
     pub async fn sync_with_market_data(
@@ -894,9 +1062,12 @@ fn parse_take_profit(raw: Option<&str>) -> Option<f64> {
 
 fn position_to_dto(position: &PaperPosition) -> PositionDto {
     PositionDto {
+        position_id: position.entry_order_id.clone(),
+        account_id: position.account_id.clone(),
         exchange: position.exchange.clone(),
         symbol: position.symbol.clone(),
         side: position.side.clone(),
+        quantity: position.quantity,
         size: quantity_label(&position.symbol, position.quantity),
         entry_price: position.entry_price,
         mark_price: position.mark_price,
@@ -1027,6 +1198,97 @@ fn refresh_positions(
 
     exits.reverse();
     exits
+}
+
+fn close_position_at_index(
+    state: &mut PaperState,
+    index: usize,
+    quantity: f64,
+    exit_price: f64,
+    updated_at: &str,
+) -> anyhow::Result<PaperOrderDraftDto> {
+    let mut position = state
+        .positions
+        .get(index)
+        .cloned()
+        .ok_or_else(|| anyhow!("模拟持仓不存在或已清仓"))?;
+    let is_short = position.side.eq_ignore_ascii_case("Short");
+    if !position.side.eq_ignore_ascii_case("Long") && !is_short {
+        bail!("当前持仓方向不支持清仓");
+    }
+    if quantity <= 0.0 {
+        bail!("paper order quantity must be positive");
+    }
+    if quantity > position.quantity + f64::EPSILON {
+        bail!("卖出数量不能超过当前持仓数量");
+    }
+    if exit_price <= 0.0 {
+        bail!("paper order entry price must be positive");
+    }
+
+    let close_quantity = quantity.min(position.quantity);
+    let close_ratio = close_quantity / position.quantity;
+    let closed_margin = position.margin_usdt * close_ratio;
+    position.mark_price = exit_price;
+    let realized_pnl_usdt = if is_short {
+        round_money((position.entry_price - exit_price) * close_quantity)
+    } else {
+        round_money((exit_price - position.entry_price) * close_quantity)
+    };
+    if let Some(account) = state.accounts.get_mut(&position.account_id) {
+        account.available_usdt += closed_margin + realized_pnl_usdt;
+    }
+
+    let fully_closed = (position.quantity - close_quantity).abs() < f64::EPSILON;
+    if fully_closed {
+        state.positions.remove(index);
+    } else if let Some(open_position) = state.positions.get_mut(index) {
+        open_position.quantity -= close_quantity;
+        open_position.margin_usdt -= closed_margin;
+        open_position.mark_price = exit_price;
+        open_position.updated_at = updated_at.to_string();
+    }
+
+    if fully_closed {
+        if let Some(order) = state
+            .orders
+            .iter_mut()
+            .find(|order| order.order_id == position.entry_order_id)
+        {
+            order.status = "Closed Manual Sell".into();
+            order.realized_pnl_usdt = Some(realized_pnl_usdt);
+            order.updated_at = updated_at.to_string();
+        }
+    }
+
+    let order_id = format!("PO-{:04}", state.next_order_id);
+    state.next_order_id += 1;
+    state.orders.insert(
+        0,
+        PaperOrderRecord {
+            order_id: order_id.clone(),
+            exchange: position.exchange.clone(),
+            symbol: position.symbol.clone(),
+            order_type: "卖出".into(),
+            status: "Filled".into(),
+            quantity: close_quantity,
+            estimated_fill_price: exit_price,
+            realized_pnl_usdt: Some(realized_pnl_usdt),
+            updated_at: updated_at.to_string(),
+        },
+    );
+
+    Ok(PaperOrderDraftDto {
+        order_id,
+        account_id: position.account_id,
+        exchange: position.exchange,
+        symbol: position.symbol,
+        side: "sell".into(),
+        quantity: close_quantity,
+        estimated_fill_price: exit_price,
+        stop_loss: None,
+        take_profit: None,
+    })
 }
 
 fn exit_status(position: &PaperPosition) -> Option<&'static str> {

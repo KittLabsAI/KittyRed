@@ -5,6 +5,7 @@ import { Stronghold } from "@tauri-apps/plugin-stronghold";
 
 export type AnalyzeFrequency = "5m" | "10m" | "30m" | "1h";
 export type SignalScanFrequency = "5m" | "10m" | "15m" | "30m" | "1h";
+export type AiKlineFrequency = "1m" | "5m" | "30m" | "1h" | "1d" | "1w" | "1M";
 export type ScanScopeSetting = "all_markets" | "watchlist_only";
 export type AccountModeSetting = "paper" | "real_read_only" | "dual";
 export type AllowedMarketsSetting = "all" | "spot" | "perpetual";
@@ -54,6 +55,10 @@ export type SettingsFormData = {
   scanScope: ScanScopeSetting;
   watchlistSymbols: string[];
   dailyMaxAiCalls: number;
+  useBidAskData: boolean;
+  useFinancialReportData: boolean;
+  aiKlineBarCount: number;
+  aiKlineFrequencies: AiKlineFrequency[];
   pauseAfterConsecutiveLosses: number;
   minConfidenceScore: number;
   allowedMarkets: AllowedMarketsSetting;
@@ -295,6 +300,10 @@ function defaultSettings(): SettingsFormData {
     scanScope: "all_markets",
     watchlistSymbols: [],
     dailyMaxAiCalls: 24,
+    useBidAskData: true,
+    useFinancialReportData: false,
+    aiKlineBarCount: 60,
+    aiKlineFrequencies: ["5m", "1h", "1d", "1w"],
     pauseAfterConsecutiveLosses: 3,
     minConfidenceScore: 60,
     allowedMarkets: "perpetual",
@@ -370,6 +379,16 @@ function normalizeSymbolList(
   return normalized;
 }
 
+function normalizeAiKlineFrequencies(
+  values: Array<string | null | undefined> | undefined,
+): AiKlineFrequency[] {
+  const allowed: AiKlineFrequency[] = ["1m", "5m", "30m", "1h", "1d", "1w", "1M"];
+  const normalized = (values ?? []).filter((value): value is AiKlineFrequency =>
+    allowed.includes(value as AiKlineFrequency),
+  );
+  return normalized.length > 0 ? Array.from(new Set(normalized)) : ["5m", "1h", "1d", "1w"];
+}
+
 function normalizePersistedSettings(
   value: Partial<PersistedSettings> | null | undefined,
 ): SettingsFormData {
@@ -419,6 +438,11 @@ function normalizePersistedSettings(
     watchlistSymbols,
     whitelistSymbols,
     blacklistSymbols,
+    useBidAskData: value?.useBidAskData ?? defaults.useBidAskData,
+    useFinancialReportData:
+      value?.useFinancialReportData ?? defaults.useFinancialReportData,
+    aiKlineBarCount: Math.max(1, Number(value?.aiKlineBarCount ?? defaults.aiKlineBarCount)),
+    aiKlineFrequencies: normalizeAiKlineFrequencies(value?.aiKlineFrequencies),
     modelApiKey: "",
     hasStoredModelApiKey:
       value?.hasStoredModelApiKey ?? defaults.hasStoredModelApiKey,

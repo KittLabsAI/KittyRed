@@ -1,6 +1,14 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDateTime, formatPercent } from "../../lib/format";
-import { getPortfolioOverview, listMarkets, listOrders, listPositions } from "../../lib/tauri";
+import {
+  closePaperPosition,
+  getPortfolioOverview,
+  listMarkets,
+  listOrders,
+  listPositions,
+  resetPaperAccount,
+} from "../../lib/tauri";
 import type { MarketRow } from "../../lib/types";
 
 function formatCny(value: number) {
@@ -33,6 +41,8 @@ const fallbackStockNames: Record<string, string> = {
 };
 
 export function PositionsPage() {
+  const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
   const overviewQuery = useQuery({
     queryKey: ["portfolio-overview"],
     queryFn: getPortfolioOverview,
@@ -61,6 +71,38 @@ export function PositionsPage() {
   const orders = (ordersQuery.data ?? []).filter((order) => isAShareSymbol(order.symbol));
   const overview = overviewQuery.data;
   const markets = marketsQuery.data ?? [];
+  const closePositionMutation = useMutation({
+    mutationFn: closePaperPosition,
+    onMutate: () => {
+      setActionError(null);
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["positions"] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["portfolio-overview"] }),
+      ]);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "清仓失败，请稍后重试");
+    },
+  });
+  const resetAccountMutation = useMutation({
+    mutationFn: resetPaperAccount,
+    onMutate: () => {
+      setActionError(null);
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["positions"] }),
+        queryClient.invalidateQueries({ queryKey: ["orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["portfolio-overview"] }),
+      ]);
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "重置失败，请稍后重试");
+    },
+  });
 
   return (
     <section className="page-stack">
@@ -70,7 +112,16 @@ export function PositionsPage() {
             <span className="section-label">资产总览</span>
             <h2>模拟账户资产</h2>
           </div>
+          <button
+            className="ghost-button ghost-button--danger"
+            disabled={resetAccountMutation.isPending}
+            onClick={() => resetAccountMutation.mutate()}
+            type="button"
+          >
+            {resetAccountMutation.isPending ? "重置中..." : "重置"}
+          </button>
         </div>
+        {actionError ? <p className="positions-action-error">{actionError}</p> : null}
         <div className="metric-grid metric-grid--four">
           <article className="metric-card">
             <span className="section-label">总资产</span>
@@ -114,11 +165,12 @@ export function PositionsPage() {
                 <th>最新价</th>
                 <th>盈亏</th>
                 <th>类型</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
               {positions.map((position) => (
-                <tr key={`${position.exchange}-${position.symbol}-${position.side}`}>
+                <tr key={position.positionId}>
                   <td>{position.symbol}</td>
                   <td>{stockName(position.symbol, markets)}</td>
                   <td>{position.side === "Short" ? "观察" : "持有"}</td>
@@ -127,6 +179,18 @@ export function PositionsPage() {
                   <td>¥{position.mark.toLocaleString("zh-CN")}</td>
                   <td className={position.pnlPct >= 0 ? "positive-text" : "negative-text"}>{formatPercent(position.pnlPct)}</td>
                   <td>模拟</td>
+                  <td>
+                    <button
+                      className="ghost-button table-action-button"
+                      disabled={closePositionMutation.isPending}
+                      onClick={() => closePositionMutation.mutate(position.positionId)}
+                      type="button"
+                    >
+                      {closePositionMutation.isPending && closePositionMutation.variables === position.positionId
+                        ? "清仓中..."
+                        : "清仓"}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

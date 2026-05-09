@@ -17,6 +17,7 @@ mod tests {
         runtime.scan_scope = "watchlist_only".into();
         runtime.watchlist_symbols = vec!["SHSE.600000".into(), "SZSE.000001".into()];
         runtime.daily_max_ai_calls = 12;
+        runtime.use_financial_report_data = true;
         runtime.pause_after_consecutive_losses = 2;
         runtime.model_temperature = 0.4;
         runtime.model_max_tokens = 1200;
@@ -48,6 +49,7 @@ mod tests {
             vec!["SHSE.600000", "SZSE.000001"]
         );
         assert_eq!(restored.daily_max_ai_calls, 12);
+        assert!(restored.use_financial_report_data);
         assert_eq!(restored.pause_after_consecutive_losses, 2);
         assert_eq!(restored.model_temperature, 0.4);
         assert_eq!(restored.model_max_tokens, 1200);
@@ -448,6 +450,10 @@ fn default_runtime_settings() -> RuntimeSettingsDto {
         scan_scope: "watchlist_only".into(),
         watchlist_symbols: Vec::new(),
         daily_max_ai_calls: 24,
+        use_bid_ask_data: true,
+        use_financial_report_data: false,
+        ai_kline_bar_count: 60,
+        ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
         pause_after_consecutive_losses: 3,
         min_confidence_score: 60.0,
         allowed_markets: "ashare".into(),
@@ -534,6 +540,10 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
         scan_scope: "watchlist_only".into(),
         watchlist_symbols: normalize_symbol_list(runtime.watchlist_symbols),
         daily_max_ai_calls: runtime.daily_max_ai_calls.max(1),
+        use_bid_ask_data: runtime.use_bid_ask_data,
+        use_financial_report_data: runtime.use_financial_report_data,
+        ai_kline_bar_count: runtime.ai_kline_bar_count.clamp(1, 500),
+        ai_kline_frequencies: normalize_ai_kline_frequencies(runtime.ai_kline_frequencies),
         pause_after_consecutive_losses: runtime.pause_after_consecutive_losses,
         min_confidence_score: runtime.min_confidence_score.clamp(0.0, 100.0),
         allowed_markets: "ashare".into(),
@@ -581,6 +591,21 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
         signal_auto_execute: runtime.signal_auto_execute,
         signal_notifications: runtime.signal_notifications,
         signal_watchlist_symbols: normalize_symbol_list(runtime.signal_watchlist_symbols),
+    }
+}
+
+fn normalize_ai_kline_frequencies(values: Vec<String>) -> Vec<String> {
+    let allowed = ["1m", "5m", "30m", "1h", "1d", "1w", "1M"];
+    let mut normalized = Vec::new();
+    for value in values {
+        if allowed.contains(&value.as_str()) && !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    if normalized.is_empty() {
+        crate::models::default_ai_kline_frequencies()
+    } else {
+        normalized
     }
 }
 

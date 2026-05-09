@@ -81,6 +81,7 @@ const comparisonColumns: Array<{ key: keyof RecommendationHistoryRow; label: str
 export function RecommendationsPage() {
   const queryClient = useQueryClient();
   const openAssistant = useAppStore((state) => state.openAssistant);
+  const [directionFilter, setDirectionFilter] = useState("all");
   const [symbolFilter, setSymbolFilter] = useState("all");
   const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
   const [historyPage, setHistoryPage] = useState(1);
@@ -133,7 +134,15 @@ export function RecommendationsPage() {
     () => Array.from(new Set(history.map((row) => row.symbol))).sort(),
     [history],
   );
-  const filteredHistory = symbolFilter === "all" ? history : history.filter((row) => row.symbol === symbolFilter);
+  const directionOptions = useMemo(
+    () => Array.from(new Set(history.map((row) => row.direction).filter(Boolean))).sort(),
+    [history],
+  );
+  const filteredHistory = history.filter(
+    (row) =>
+      (directionFilter === "all" || row.direction === directionFilter) &&
+      (symbolFilter === "all" || row.symbol === symbolFilter),
+  );
   const historyPageSize = 10;
   const totalHistoryPages = Math.max(1, Math.ceil(filteredHistory.length / historyPageSize));
   const currentHistoryPage = Math.min(historyPage, totalHistoryPages);
@@ -177,23 +186,42 @@ export function RecommendationsPage() {
             <span className="section-label">历史评估</span>
             <h2>投资建议历史</h2>
           </div>
-          <label className="search-shell recommendation-history-filter">
-            <select
-              aria-label="股票筛选"
-              onChange={(event) => {
-                setSymbolFilter(event.target.value);
-                setHistoryPage(1);
-              }}
-              value={symbolFilter}
-            >
-              <option value="all">全部股票</option>
-              {symbolOptions.map((symbol) => (
-                <option key={symbol} value={symbol}>
-                  {symbol} {history.find((row) => row.symbol === symbol)?.stockName ?? stockName(symbol, markets)}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="recommendation-history-filters">
+            <label className="search-shell recommendation-history-filter">
+              <select
+                aria-label="交易方向筛选"
+                onChange={(event) => {
+                  setDirectionFilter(event.target.value);
+                  setHistoryPage(1);
+                }}
+                value={directionFilter}
+              >
+                <option value="all">全部方向</option>
+                {directionOptions.map((direction) => (
+                  <option key={direction} value={direction}>
+                    {direction}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="search-shell recommendation-history-filter">
+              <select
+                aria-label="股票筛选"
+                onChange={(event) => {
+                  setSymbolFilter(event.target.value);
+                  setHistoryPage(1);
+                }}
+                value={symbolFilter}
+              >
+                <option value="all">全部股票</option>
+                {symbolOptions.map((symbol) => (
+                  <option key={symbol} value={symbol}>
+                    {symbol} {history.find((row) => row.symbol === symbol)?.stockName ?? stockName(symbol, markets)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
         <p className="panel__meta">
           {historyQuery.isFetching

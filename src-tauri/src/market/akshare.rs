@@ -138,6 +138,20 @@ pub fn fetch_multi_frequency_bars(symbol: &str, count: usize) -> anyhow::Result<
     Ok(parsed.data.unwrap_or_else(|| json!({})))
 }
 
+pub fn fetch_financial_reports(years: u32) -> anyhow::Result<serde_json::Value> {
+    let response = call_python(json!({
+        "action": "financial_reports",
+        "years": years,
+    }))?;
+    let parsed: AkshareResponse<serde_json::Value> = serde_json::from_value(response)?;
+    if !parsed.ok {
+        bail!(parsed
+            .error
+            .unwrap_or_else(|| "AKShare 财报请求失败".into()));
+    }
+    Ok(parsed.data.unwrap_or_else(|| json!({})))
+}
+
 pub fn search_stocks(query: &str) -> anyhow::Result<Vec<AShareSymbolSearchResultDto>> {
     if query.trim().is_empty() {
         return Ok(Vec::new());

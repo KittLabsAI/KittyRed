@@ -13,3 +13,5 @@ pub const PAPER_ORDER: &str = "paper.order";
 pub const ASSISTANT_RUN: &str = "assistant_run";
 pub const NOTIFICATION_DISPATCH: &str = "notification_dispatch";
 pub const SIGNAL_SCAN: &str = "signal_scan";
+pub const FINANCIAL_REPORT_FETCH: &str = "financial_report.fetch";
+pub const FINANCIAL_REPORT_ANALYZE: &str = "financial_report.analyze";

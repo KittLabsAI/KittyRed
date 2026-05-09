@@ -1,6 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AnalyzeJob,
+  BacktestDataset,
+  BacktestFetchFailure,
+  BacktestFetchProgress,
+  BacktestRun,
+  BacktestSignal,
+  BacktestSummary,
+  BacktestTrade,
+  FinancialReportAnalysis,
+  FinancialReportFetchProgress,
+  FinancialReportOverview,
+  FinancialReportSnapshot,
   AShareSymbolSearchResult,
   ArbitrageOpportunity,
   ArbitrageOpportunityPage,
@@ -295,6 +306,205 @@ type RecommendationAuditDto = {
   account_snapshot: string;
 };
 
+type BacktestDatasetDto = {
+  dataset_id?: string;
+  datasetId?: string;
+  name: string;
+  status: string;
+  symbols: string[];
+  start_date?: string;
+  startDate?: string;
+  end_date?: string;
+  endDate?: string;
+  interval_minutes?: number;
+  intervalMinutes?: number;
+  total_snapshots?: number;
+  totalSnapshots?: number;
+  fetched_count?: number;
+  fetchedCount?: number;
+  estimated_llm_calls?: number;
+  estimatedLlmCalls?: number;
+  error_message?: string | null;
+  errorMessage?: string | null;
+  created_at?: string;
+  createdAt?: string;
+  completed_at?: string | null;
+  completedAt?: string | null;
+};
+
+type BacktestFetchFailureDto = {
+  failure_id?: string;
+  failureId?: string;
+  dataset_id?: string;
+  datasetId?: string;
+  symbol: string;
+  captured_at?: string | null;
+  capturedAt?: string | null;
+  timeframe: string;
+  stage: string;
+  reason: string;
+  error_detail?: string | null;
+  errorDetail?: string | null;
+  created_at?: string;
+  createdAt?: string;
+};
+
+type BacktestFetchProgressDto = {
+  dataset_id?: string;
+  datasetId?: string;
+  status: string;
+  total_snapshots?: number;
+  totalSnapshots?: number;
+  fetched_count?: number;
+  fetchedCount?: number;
+  failure_count?: number;
+  failureCount?: number;
+  error_message?: string | null;
+  errorMessage?: string | null;
+  recent_failures?: BacktestFetchFailureDto[];
+  recentFailures?: BacktestFetchFailureDto[];
+};
+
+type BacktestRunDto = {
+  backtest_id?: string;
+  backtestId?: string;
+  dataset_id?: string;
+  datasetId?: string;
+  name: string;
+  status: string;
+  model_provider?: string;
+  modelProvider?: string;
+  model_name?: string;
+  modelName?: string;
+  prompt_version?: string;
+  promptVersion?: string;
+  max_holding_days?: number;
+  maxHoldingDays?: number;
+  total_ai_calls?: number;
+  totalAiCalls?: number;
+  processed_ai_calls?: number;
+  processedAiCalls?: number;
+  total_timepoints?: number;
+  totalTimepoints?: number;
+  processed_timepoints?: number;
+  processedTimepoints?: number;
+  total_signals?: number;
+  totalSignals?: number;
+  trade_signals?: number;
+  tradeSignals?: number;
+  open_trades?: number;
+  openTrades?: number;
+  win_count?: number;
+  winCount?: number;
+  loss_count?: number;
+  lossCount?: number;
+  flat_count?: number;
+  flatCount?: number;
+  total_pnl_cny?: number;
+  totalPnlCny?: number;
+  total_pnl_percent?: number;
+  totalPnlPercent?: number;
+  max_drawdown_percent?: number;
+  maxDrawdownPercent?: number;
+  profit_factor?: number | null;
+  profitFactor?: number | null;
+  error_message?: string | null;
+  errorMessage?: string | null;
+  created_at?: string;
+  createdAt?: string;
+  completed_at?: string | null;
+  completedAt?: string | null;
+};
+
+type BacktestSignalDto = {
+  signal_id?: string;
+  signalId?: string;
+  backtest_id?: string;
+  backtestId?: string;
+  symbol: string;
+  stock_name?: string | null;
+  stockName?: string | null;
+  captured_at?: string;
+  capturedAt?: string;
+  has_trade?: boolean;
+  hasTrade?: boolean;
+  direction?: string | null;
+  confidence_score?: number | null;
+  confidenceScore?: number | null;
+  risk_status?: string | null;
+  riskStatus?: string | null;
+  entry_low?: number | null;
+  entryLow?: number | null;
+  entry_high?: number | null;
+  entryHigh?: number | null;
+  stop_loss?: number | null;
+  stopLoss?: number | null;
+  take_profit?: string | null;
+  takeProfit?: string | null;
+  amount_cny?: number | null;
+  amountCny?: number | null;
+  max_loss_cny?: number | null;
+  maxLossCny?: number | null;
+  rationale?: string | null;
+  result: string;
+};
+
+type BacktestTradeDto = {
+  trade_id?: string;
+  tradeId?: string;
+  backtest_id?: string;
+  backtestId?: string;
+  signal_id?: string | null;
+  signalId?: string | null;
+  symbol: string;
+  stock_name?: string | null;
+  stockName?: string | null;
+  direction: string;
+  entry_price?: number;
+  entryPrice?: number;
+  entry_at?: string;
+  entryAt?: string;
+  exit_price?: number;
+  exitPrice?: number;
+  exit_at?: string;
+  exitAt?: string;
+  exit_reason?: string;
+  exitReason?: string;
+  stop_loss?: number | null;
+  stopLoss?: number | null;
+  take_profit?: number | null;
+  takeProfit?: number | null;
+  amount_cny?: number | null;
+  amountCny?: number | null;
+  holding_periods?: number;
+  holdingPeriods?: number;
+  pnl_cny?: number;
+  pnlCny?: number;
+  pnl_percent?: number;
+  pnlPercent?: number;
+};
+
+type BacktestSummaryDto = {
+  backtest_id?: string;
+  backtestId?: string;
+  total_signals?: number;
+  totalSignals?: number;
+  trade_count?: number;
+  tradeCount?: number;
+  win_rate?: number;
+  winRate?: number;
+  total_pnl_cny?: number;
+  totalPnlCny?: number;
+  total_pnl_percent?: number;
+  totalPnlPercent?: number;
+  max_drawdown_percent?: number;
+  maxDrawdownPercent?: number;
+  profit_factor?: number | null;
+  profitFactor?: number | null;
+  equity_curve?: Array<{ captured_at?: string; capturedAt?: string; cumulative_pnl_percent?: number; cumulativePnlPercent?: number }>;
+  equityCurve?: Array<{ captured_at?: string; capturedAt?: string; cumulative_pnl_percent?: number; cumulativePnlPercent?: number }>;
+};
+
 type PaperOrderDraftDto = {
   order_id: string;
   account_id: string;
@@ -350,9 +560,12 @@ type PortfolioOverviewDto = {
 };
 
 type PositionDto = {
+  position_id: string;
+  account_id: string;
   exchange: string;
   symbol: string;
   side: string;
+  quantity: number;
   size: string;
   entry_price: number;
   mark_price: number;
@@ -710,6 +923,143 @@ function mapRecommendationAudit(dto: RecommendationAuditDto): RecommendationAudi
   };
 }
 
+function mapBacktestDataset(dto: BacktestDatasetDto): BacktestDataset {
+  return {
+    datasetId: dto.dataset_id ?? dto.datasetId ?? "",
+    name: dto.name,
+    status: dto.status,
+    symbols: dto.symbols,
+    startDate: dto.start_date ?? dto.startDate ?? "",
+    endDate: dto.end_date ?? dto.endDate ?? "",
+    intervalMinutes: dto.interval_minutes ?? dto.intervalMinutes ?? 30,
+    totalSnapshots: dto.total_snapshots ?? dto.totalSnapshots ?? 0,
+    fetchedCount: dto.fetched_count ?? dto.fetchedCount ?? 0,
+    estimatedLlmCalls: dto.estimated_llm_calls ?? dto.estimatedLlmCalls ?? 0,
+    errorMessage: dto.error_message ?? dto.errorMessage ?? undefined,
+    createdAt: dto.created_at ?? dto.createdAt ?? "",
+    completedAt: dto.completed_at ?? dto.completedAt ?? undefined,
+  };
+}
+
+function mapBacktestFetchFailure(dto: BacktestFetchFailureDto): BacktestFetchFailure {
+  return {
+    failureId: dto.failure_id ?? dto.failureId ?? "",
+    datasetId: dto.dataset_id ?? dto.datasetId ?? "",
+    symbol: dto.symbol,
+    capturedAt: dto.captured_at ?? dto.capturedAt ?? undefined,
+    timeframe: dto.timeframe,
+    stage: dto.stage,
+    reason: dto.reason,
+    errorDetail: dto.error_detail ?? dto.errorDetail ?? undefined,
+    createdAt: dto.created_at ?? dto.createdAt ?? "",
+  };
+}
+
+function mapBacktestFetchProgress(dto: BacktestFetchProgressDto): BacktestFetchProgress {
+  const failures = dto.recent_failures ?? dto.recentFailures ?? [];
+  return {
+    datasetId: dto.dataset_id ?? dto.datasetId ?? "",
+    status: dto.status,
+    totalSnapshots: dto.total_snapshots ?? dto.totalSnapshots ?? 0,
+    fetchedCount: dto.fetched_count ?? dto.fetchedCount ?? 0,
+    failureCount: dto.failure_count ?? dto.failureCount ?? 0,
+    errorMessage: dto.error_message ?? dto.errorMessage ?? undefined,
+    recentFailures: failures.map(mapBacktestFetchFailure),
+  };
+}
+
+function mapBacktestRun(dto: BacktestRunDto): BacktestRun {
+  return {
+    backtestId: dto.backtest_id ?? dto.backtestId ?? "",
+    datasetId: dto.dataset_id ?? dto.datasetId ?? "",
+    name: dto.name,
+    status: dto.status,
+    modelProvider: dto.model_provider ?? dto.modelProvider ?? "",
+    modelName: dto.model_name ?? dto.modelName ?? "",
+    promptVersion: dto.prompt_version ?? dto.promptVersion ?? "",
+    maxHoldingDays: dto.max_holding_days ?? dto.maxHoldingDays ?? 7,
+    totalAiCalls: dto.total_ai_calls ?? dto.totalAiCalls ?? 0,
+    processedAiCalls: dto.processed_ai_calls ?? dto.processedAiCalls ?? 0,
+    totalTimepoints: dto.total_timepoints ?? dto.totalTimepoints ?? 0,
+    processedTimepoints: dto.processed_timepoints ?? dto.processedTimepoints ?? 0,
+    totalSignals: dto.total_signals ?? dto.totalSignals ?? 0,
+    tradeSignals: dto.trade_signals ?? dto.tradeSignals ?? 0,
+    openTrades: dto.open_trades ?? dto.openTrades ?? 0,
+    winCount: dto.win_count ?? dto.winCount ?? 0,
+    lossCount: dto.loss_count ?? dto.lossCount ?? 0,
+    flatCount: dto.flat_count ?? dto.flatCount ?? 0,
+    totalPnlCny: dto.total_pnl_cny ?? dto.totalPnlCny ?? 0,
+    totalPnlPercent: dto.total_pnl_percent ?? dto.totalPnlPercent ?? 0,
+    maxDrawdownPercent: dto.max_drawdown_percent ?? dto.maxDrawdownPercent ?? 0,
+    profitFactor: dto.profit_factor ?? dto.profitFactor ?? undefined,
+    errorMessage: dto.error_message ?? dto.errorMessage ?? undefined,
+    createdAt: dto.created_at ?? dto.createdAt ?? "",
+    completedAt: dto.completed_at ?? dto.completedAt ?? undefined,
+  };
+}
+
+function mapBacktestSignal(dto: BacktestSignalDto): BacktestSignal {
+  return {
+    signalId: dto.signal_id ?? dto.signalId ?? "",
+    backtestId: dto.backtest_id ?? dto.backtestId ?? "",
+    symbol: dto.symbol,
+    stockName: dto.stock_name ?? dto.stockName ?? undefined,
+    capturedAt: dto.captured_at ?? dto.capturedAt ?? "",
+    hasTrade: dto.has_trade ?? dto.hasTrade ?? false,
+    direction: dto.direction ?? undefined,
+    confidenceScore: dto.confidence_score ?? dto.confidenceScore ?? undefined,
+    riskStatus: dto.risk_status ?? dto.riskStatus ?? undefined,
+    entryLow: dto.entry_low ?? dto.entryLow ?? undefined,
+    entryHigh: dto.entry_high ?? dto.entryHigh ?? undefined,
+    stopLoss: dto.stop_loss ?? dto.stopLoss ?? undefined,
+    takeProfit: dto.take_profit ?? dto.takeProfit ?? undefined,
+    amountCny: dto.amount_cny ?? dto.amountCny ?? undefined,
+    maxLossCny: dto.max_loss_cny ?? dto.maxLossCny ?? undefined,
+    rationale: dto.rationale ?? undefined,
+    result: dto.result,
+  };
+}
+
+function mapBacktestTrade(dto: BacktestTradeDto): BacktestTrade {
+  return {
+    tradeId: dto.trade_id ?? dto.tradeId ?? "",
+    backtestId: dto.backtest_id ?? dto.backtestId ?? "",
+    signalId: dto.signal_id ?? dto.signalId ?? undefined,
+    symbol: dto.symbol,
+    stockName: dto.stock_name ?? dto.stockName ?? undefined,
+    direction: dto.direction,
+    entryPrice: dto.entry_price ?? dto.entryPrice ?? 0,
+    entryAt: dto.entry_at ?? dto.entryAt ?? "",
+    exitPrice: dto.exit_price ?? dto.exitPrice ?? 0,
+    exitAt: dto.exit_at ?? dto.exitAt ?? "",
+    exitReason: dto.exit_reason ?? dto.exitReason ?? "",
+    stopLoss: dto.stop_loss ?? dto.stopLoss ?? undefined,
+    takeProfit: dto.take_profit ?? dto.takeProfit ?? undefined,
+    amountCny: dto.amount_cny ?? dto.amountCny ?? undefined,
+    holdingPeriods: dto.holding_periods ?? dto.holdingPeriods ?? 0,
+    pnlCny: dto.pnl_cny ?? dto.pnlCny ?? 0,
+    pnlPercent: dto.pnl_percent ?? dto.pnlPercent ?? 0,
+  };
+}
+
+function mapBacktestSummary(dto: BacktestSummaryDto): BacktestSummary {
+  const curve = dto.equity_curve ?? dto.equityCurve ?? [];
+  return {
+    backtestId: dto.backtest_id ?? dto.backtestId ?? "",
+    totalSignals: dto.total_signals ?? dto.totalSignals ?? 0,
+    tradeCount: dto.trade_count ?? dto.tradeCount ?? 0,
+    winRate: dto.win_rate ?? dto.winRate ?? 0,
+    totalPnlCny: dto.total_pnl_cny ?? dto.totalPnlCny ?? 0,
+    totalPnlPercent: dto.total_pnl_percent ?? dto.totalPnlPercent ?? 0,
+    maxDrawdownPercent: dto.max_drawdown_percent ?? dto.maxDrawdownPercent ?? 0,
+    profitFactor: dto.profit_factor ?? dto.profitFactor ?? undefined,
+    equityCurve: curve.map((point) => ({
+      capturedAt: point.captured_at ?? point.capturedAt ?? "",
+      cumulativePnlPercent: point.cumulative_pnl_percent ?? point.cumulativePnlPercent ?? 0,
+    })),
+  };
+}
+
 function mapPaperOrderDraft(dto: PaperOrderDraftDto): PaperOrderDraft {
   return {
     orderId: dto.order_id,
@@ -765,6 +1115,8 @@ function mapPortfolioOverview(dto: PortfolioOverviewDto): PortfolioOverview {
 
 function mapPosition(dto: PositionDto): PositionRow {
   return {
+    positionId: dto.position_id,
+    accountId: dto.account_id,
     exchange: dto.exchange,
     symbol: dto.symbol,
     side:
@@ -773,6 +1125,7 @@ function mapPosition(dto: PositionDto): PositionRow {
         : dto.side.toLowerCase() === "spot"
           ? "Holding"
           : "Long",
+    quantity: dto.quantity,
     size: dto.size,
     entry: dto.entry_price,
     mark: dto.mark_price,
@@ -1103,6 +1456,279 @@ export async function deleteRecommendation(recommendationId: string): Promise<vo
   });
 }
 
+export async function createBacktestDataset(request: {
+  name: string;
+  symbols: string[];
+  startDate: string;
+  endDate: string;
+  intervalMinutes: number;
+}): Promise<BacktestDataset> {
+  if (!isTauriRuntime()) {
+    return mapBacktestDataset({
+      datasetId: `dataset-${Date.now()}`,
+      name: request.name,
+      status: "pending",
+      symbols: request.symbols.length > 0 ? request.symbols : ["SHSE.600000"],
+      startDate: request.startDate,
+      endDate: request.endDate,
+      intervalMinutes: request.intervalMinutes,
+      totalSnapshots: 0,
+      fetchedCount: 0,
+      estimatedLlmCalls: 48,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  const dto = await invoke<BacktestDatasetDto>("create_backtest_dataset", { params: request });
+  return mapBacktestDataset(dto);
+}
+
+export async function startFetchSnapshots(datasetId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("start_fetch_snapshots", { datasetId });
+}
+
+export async function cancelFetchSnapshots(datasetId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("cancel_fetch_snapshots", { datasetId });
+}
+
+export async function listBacktestDatasets(): Promise<BacktestDataset[]> {
+  if (!isTauriRuntime()) {
+    return [
+      mapBacktestDataset({
+        datasetId: "dataset-preview",
+        name: "本地预览数据",
+        status: "ready",
+        symbols: ["SHSE.600000"],
+        startDate: "2026-04-01",
+        endDate: "2026-04-03",
+        intervalMinutes: 30,
+        totalSnapshots: 48,
+        fetchedCount: 48,
+        estimatedLlmCalls: 48,
+        createdAt: "2026-05-07T09:00:00+08:00",
+        completedAt: "2026-05-07T09:05:00+08:00",
+      }),
+    ];
+  }
+
+  const rows = await invoke<BacktestDatasetDto[]>("list_backtest_datasets");
+  return rows.map(mapBacktestDataset);
+}
+
+export async function getBacktestFetchProgress(datasetId: string): Promise<BacktestFetchProgress> {
+  if (!isTauriRuntime()) {
+    return {
+      datasetId,
+      status: "ready",
+      totalSnapshots: 48,
+      fetchedCount: 46,
+      failureCount: 2,
+      errorMessage: "拉取完成，46 个快照可用，2 个股票-时间点失败，可在失败记录中查看。",
+      recentFailures: [
+        {
+          failureId: "failure-preview-1",
+          datasetId,
+          symbol: "SHSE.600000",
+          capturedAt: "2026-04-01T10:00:00+08:00",
+          timeframe: "1h",
+          stage: "history_bars",
+          reason: "SHSE.600000 1h K 线拉取失败",
+          errorDetail: "浏览器预览失败样例",
+          createdAt: "2026-05-07T09:04:00+08:00",
+        },
+      ],
+    };
+  }
+
+  const dto = await invoke<BacktestFetchProgressDto>("get_backtest_fetch_progress", { datasetId });
+  return mapBacktestFetchProgress(dto);
+}
+
+export async function listBacktestFetchFailures(datasetId: string): Promise<BacktestFetchFailure[]> {
+  if (!isTauriRuntime()) {
+    return (await getBacktestFetchProgress(datasetId)).recentFailures;
+  }
+
+  const rows = await invoke<BacktestFetchFailureDto[]>("list_backtest_fetch_failures", { datasetId });
+  return rows.map(mapBacktestFetchFailure);
+}
+
+export async function deleteBacktestDataset(datasetId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("delete_backtest_dataset", { datasetId });
+}
+
+export async function createBacktest(request: {
+  datasetId: string;
+  name: string;
+  maxHoldingDays?: number;
+}): Promise<BacktestRun> {
+  if (!isTauriRuntime()) {
+    return mapBacktestRun({
+      backtestId: `bt-${Date.now()}`,
+      datasetId: request.datasetId,
+      name: request.name,
+      status: "pending",
+      modelProvider: "OpenAI-compatible",
+      modelName: "gpt-5.5",
+      promptVersion: "recommendation-system-v2",
+      maxHoldingDays: request.maxHoldingDays ?? 7,
+      totalAiCalls: 0,
+      processedAiCalls: 0,
+      totalTimepoints: 0,
+      processedTimepoints: 0,
+      totalSignals: 0,
+      tradeSignals: 0,
+      openTrades: 0,
+      winCount: 0,
+      lossCount: 0,
+      flatCount: 0,
+      totalPnlCny: 0,
+      totalPnlPercent: 0,
+      maxDrawdownPercent: 0,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  const dto = await invoke<BacktestRunDto>("create_backtest", { params: request });
+  return mapBacktestRun(dto);
+}
+
+export async function startBacktest(backtestId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("start_backtest", { backtestId });
+}
+
+export async function startGenerateBacktestSignals(backtestId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("start_generate_backtest_signals", { backtestId });
+}
+
+export async function startReplayBacktest(backtestId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("start_replay_backtest", { backtestId });
+}
+
+export async function cancelBacktest(backtestId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("cancel_backtest", { backtestId });
+}
+
+export async function listBacktestRuns(): Promise<BacktestRun[]> {
+  if (!isTauriRuntime()) {
+    return [
+      mapBacktestRun({
+        backtestId: "bt-preview",
+        datasetId: "dataset-preview",
+        name: "本地预览回测",
+        status: "completed",
+        modelProvider: "OpenAI-compatible",
+        modelName: "gpt-5.5",
+        promptVersion: "recommendation-system-v2",
+        maxHoldingDays: 7,
+        totalAiCalls: 48,
+        processedAiCalls: 48,
+        totalTimepoints: 24,
+        processedTimepoints: 24,
+        totalSignals: 48,
+        tradeSignals: 8,
+        openTrades: 0,
+        winCount: 5,
+        lossCount: 3,
+        flatCount: 0,
+        totalPnlCny: 1260,
+        totalPnlPercent: 6.3,
+        maxDrawdownPercent: 1.8,
+        profitFactor: 1.7,
+        createdAt: "2026-05-07T09:10:00+08:00",
+        completedAt: "2026-05-07T09:20:00+08:00",
+      }),
+    ];
+  }
+
+  const rows = await invoke<BacktestRunDto[]>("list_backtest_runs");
+  return rows.map(mapBacktestRun);
+}
+
+export async function listBacktestSignals(backtestId: string): Promise<BacktestSignal[]> {
+  if (!isTauriRuntime()) {
+    return [
+      mapBacktestSignal({
+        signalId: "sig-preview",
+        backtestId,
+        symbol: "SHSE.600000",
+        stockName: "浦发银行",
+        capturedAt: "2026-04-01T10:00:00+08:00",
+        hasTrade: true,
+        direction: "买入",
+        confidenceScore: 72,
+        riskStatus: "approved",
+        rationale: "历史 K 线回踩后放量。",
+        result: "opened",
+      }),
+    ];
+  }
+
+  const rows = await invoke<BacktestSignalDto[]>("list_backtest_signals", { backtestId });
+  return rows.map(mapBacktestSignal);
+}
+
+export async function listBacktestTrades(backtestId: string): Promise<BacktestTrade[]> {
+  if (!isTauriRuntime()) {
+    return [
+      mapBacktestTrade({
+        tradeId: "trade-preview",
+        backtestId,
+        signalId: "sig-preview",
+        symbol: "SHSE.600000",
+        stockName: "浦发银行",
+        direction: "long",
+        entryPrice: 8.7,
+        entryAt: "2026-04-01T10:00:00+08:00",
+        exitPrice: 8.95,
+        exitAt: "2026-04-02T10:00:00+08:00",
+        exitReason: "take_profit",
+        amountCny: 20000,
+        holdingPeriods: 8,
+        pnlCny: 534.7,
+        pnlPercent: 2.67,
+      }),
+    ];
+  }
+
+  const rows = await invoke<BacktestTradeDto[]>("list_backtest_trades", { backtestId });
+  return rows.map(mapBacktestTrade);
+}
+
+export async function getBacktestSummary(backtestId: string): Promise<BacktestSummary> {
+  if (!isTauriRuntime()) {
+    return mapBacktestSummary({
+      backtestId,
+      totalSignals: 48,
+      tradeCount: 8,
+      winRate: 62.5,
+      totalPnlCny: 1260,
+      totalPnlPercent: 6.3,
+      maxDrawdownPercent: 1.8,
+      profitFactor: 1.7,
+      equityCurve: [
+        { capturedAt: "2026-04-01T10:00:00+08:00", cumulativePnlPercent: 0 },
+        { capturedAt: "2026-04-02T10:00:00+08:00", cumulativePnlPercent: 2.67 },
+      ],
+    });
+  }
+
+  const dto = await invoke<BacktestSummaryDto>("get_backtest_summary", { backtestId });
+  return mapBacktestSummary(dto);
+}
+
+export async function deleteBacktest(backtestId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("delete_backtest", { backtestId });
+}
+
 export async function listPaperAccounts(): Promise<PaperAccountSummary[]> {
   if (!isTauriRuntime()) {
     return [{ accountId: "paper-cny", exchange: "模拟账户", availableUsdt: 1_000_000 }];
@@ -1171,6 +1797,30 @@ export async function createManualPaperOrder(
     },
   });
   return mapAnalyzeJob(dto);
+}
+
+export async function closePaperPosition(positionId: string): Promise<PaperOrderDraft> {
+  if (!isTauriRuntime()) {
+    return {
+      orderId: `close-${positionId}`,
+      accountId: "paper-cny",
+      exchange: "模拟账户",
+      symbol: "SHSE.600000",
+      side: "sell",
+      quantity: 100,
+      estimatedFillPrice: 8.72,
+    };
+  }
+
+  const dto = await invoke<PaperOrderDraftDto>("close_paper_position", {
+    positionId,
+  });
+  return mapPaperOrderDraft(dto);
+}
+
+export async function resetPaperAccount(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("reset_paper_account");
 }
 
 export async function listenToAssistantEvents(
@@ -1382,4 +2032,68 @@ export async function listScanRuns(
   pageSize: number,
 ): Promise<ScanRunHistoryPage> {
   return invoke("list_scan_runs", { page, pageSize });
+}
+
+export async function startFinancialReportFetch(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("start_financial_report_fetch");
+}
+
+export async function cancelFinancialReportFetch(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("cancel_financial_report_fetch");
+}
+
+export async function getFinancialReportFetchProgress(): Promise<FinancialReportFetchProgress> {
+  if (!isTauriRuntime()) {
+    return {
+      stockCode: "ALL",
+      status: "idle",
+      completedSections: 0,
+      totalSections: 6,
+      message: "本地预览未启动财报拉取",
+      errorMessage: null,
+    };
+  }
+  return invoke<FinancialReportFetchProgress>("get_financial_report_fetch_progress");
+}
+
+export async function getFinancialReportOverview(): Promise<FinancialReportOverview> {
+  if (!isTauriRuntime()) {
+    return {
+      stockCount: 0,
+      rowCount: 0,
+      refreshedAt: null,
+      sections: [],
+      analyses: [],
+    };
+  }
+  return invoke<FinancialReportOverview>("get_financial_report_overview");
+}
+
+export async function getFinancialReportSnapshot(
+  stockCode: string,
+): Promise<FinancialReportSnapshot> {
+  if (!isTauriRuntime()) {
+    return {
+      stockCode,
+      sections: [],
+      sourceRevision: "",
+      refreshedAt: null,
+      analysis: null,
+    };
+  }
+  return invoke<FinancialReportSnapshot>("get_financial_report_snapshot", { stockCode });
+}
+
+export async function getFinancialReportAnalysis(
+  stockCode: string,
+): Promise<FinancialReportAnalysis | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<FinancialReportAnalysis | null>("get_financial_report_analysis", { stockCode });
+}
+
+export async function startFinancialReportAnalysis(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("start_financial_report_analysis");
 }

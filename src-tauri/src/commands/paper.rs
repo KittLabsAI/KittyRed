@@ -77,6 +77,26 @@ pub async fn create_paper_order_from_recommendation(
 }
 
 #[tauri::command]
+pub async fn close_paper_position(
+    state: tauri::State<'_, AppState>,
+    position_id: String,
+) -> CommandResult<PaperOrderDraftDto> {
+    state
+        .paper_service
+        .close_position(&position_id, current_rfc3339())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn reset_paper_account(state: tauri::State<'_, AppState>) -> CommandResult<()> {
+    state
+        .paper_service
+        .reset_account()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn create_manual_paper_order(
     state: tauri::State<'_, AppState>,
     request: ManualPaperOrderRequestDto,

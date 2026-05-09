@@ -1,7 +1,21 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PositionsPage } from "./PositionsPage";
+
+const { closePaperPositionMock, resetPaperAccountMock } = vi.hoisted(() => ({
+  closePaperPositionMock: vi.fn(async () => ({
+    orderId: "PO-0002",
+    accountId: "paper-cash",
+    exchange: "模拟账户",
+    symbol: "SHSE.600000",
+    side: "sell",
+    quantity: 100,
+    estimatedFillPrice: 8.72,
+  })),
+  resetPaperAccountMock: vi.fn(async () => undefined),
+}));
 
 vi.mock("../../lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/tauri")>();
@@ -18,9 +32,12 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
     })),
     listPositions: vi.fn(async () => [
       {
+        positionId: "PO-0001",
+        accountId: "paper-cash",
         exchange: "模拟账户",
         symbol: "SHSE.600000",
         side: "Long",
+        quantity: 100,
         size: "100 股",
         entry: 8.68,
         mark: 8.72,
@@ -28,6 +45,8 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
         leverage: "模拟",
       },
     ]),
+    closePaperPosition: closePaperPositionMock,
+    resetPaperAccount: resetPaperAccountMock,
     listOrders: vi.fn(async () => [
       {
         id: "BN-1092",
@@ -70,6 +89,10 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
 });
 
 describe("PositionsPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("renders simulated positions from the backend feed", async () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
@@ -88,10 +111,43 @@ describe("PositionsPage", () => {
     expect(screen.getByText("+¥2,400")).toBeInTheDocument();
     expect(screen.getByText("+¥800 / +0.08%")).toBeInTheDocument();
     expect(screen.getAllByText("100 股").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "重置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "清仓" })).toBeInTheDocument();
     expect(await screen.findByText("A股模拟委托")).toBeInTheDocument();
     expect(screen.getByText("PO-0001")).toBeInTheDocument();
     expect(screen.getByText("2026-05-06 15:00:00")).toBeInTheDocument();
     expect(screen.queryByText("BN-1092")).not.toBeInTheDocument();
     expect(screen.queryByText(/BTC\/USDT|ETH\/USDT|akshare|风控账户|akshare/)).not.toBeInTheDocument();
+  });
+
+  it("closes a simulated position from the position row", async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <PositionsPage />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "清仓" }));
+
+    await waitFor(() => {
+      const firstCall = closePaperPositionMock.mock.calls[0] as unknown[] | undefined;
+      expect(firstCall?.[0]).toBe("PO-0001");
+    });
+  });
+
+  it("resets the simulated account from the overview card", async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <PositionsPage />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "重置" }));
+
+    await waitFor(() => {
+      expect(resetPaperAccountMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

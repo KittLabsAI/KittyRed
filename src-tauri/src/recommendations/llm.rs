@@ -4,8 +4,10 @@ mod tests {
 
     use super::{
         build_market_prompt, build_system_prompt, endpoint_url, extract_anthropic_content,
-        extract_openai_content, new_recommendation_id, normalize_model_recommendation, parse_model_recommendation,
-        stock_agent_fetch_plan_labels, PositionContext, PromptKlineContext,
+        extract_openai_content, new_recommendation_id, normalize_model_recommendation,
+        parse_model_recommendation, stock_agent_fetch_plan_labels, PositionContext,
+        PromptKlineContext, StockAgentData, FinancialAnalysisPromptContext,
+        build_stock_agent_market_prompt,
     };
     use crate::models::{
         default_assistant_system_prompt, MarketListRow, RuntimeNotificationSettingsDto,
@@ -75,8 +77,15 @@ mod tests {
             .find(|row| row.symbol == "SHSE.600000")
             .expect("sample row should exist");
 
-        let run = normalize_model_recommendation(&payload, &row, &sample_rows(), &runtime, 100_000.0, None)
-            .expect("trade payload should normalize");
+        let run = normalize_model_recommendation(
+            &payload,
+            &row,
+            &sample_rows(),
+            &runtime,
+            100_000.0,
+            None,
+        )
+        .expect("trade payload should normalize");
 
         assert!(run.has_trade);
         assert_eq!(run.symbol.as_deref(), Some("SHSE.600000"));
@@ -218,8 +227,71 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec!["stock_info", "bid_ask", "kline_5m", "kline_1h", "kline_1d", "kline_1w"]
+            vec![
+                "stock_info",
+                "bid_ask",
+                "kline_5m",
+                "kline_1h",
+                "kline_1d",
+                "kline_1w"
+            ]
         );
+    }
+
+    #[test]
+    fn stock_agent_prompt_includes_financial_report_analysis_when_enabled() {
+        let mut runtime = runtime_settings();
+        runtime.use_financial_report_data = true;
+        let mut agent_data = StockAgentData::default();
+        agent_data.financial_report_analysis = Some(FinancialAnalysisPromptContext {
+            key_summary: "收入稳定增长".into(),
+            positive_factors: "经营现金流改善".into(),
+            negative_factors: "费用率上升".into(),
+            fraud_risk_points: "暂无明显异常".into(),
+            raw_sections: vec![serde_json::json!({
+                "section": "income_statement",
+                "rows": [{"reportDate": "2025-12-31", "raw": {"净利润": 12.3}}]
+            })],
+        });
+        let mut rows = sample_rows();
+        let row = rows.remove(0);
+
+        let prompt = build_stock_agent_market_prompt(&row, &runtime, &agent_data, None);
+        let value: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+        let financial = value
+            .pointer("/stock_context/financial_report_analysis")
+            .expect("financial context should be included");
+
+        assert_eq!(
+            financial.get("key_summary").and_then(serde_json::Value::as_str),
+            Some("收入稳定增长")
+        );
+        assert!(financial.get("raw_sections").is_some());
+        assert!(prompt.contains("fraud_risk_points"));
+        assert!(prompt.contains("净利润"));
+    }
+
+    #[test]
+    fn stock_agent_prompt_excludes_financial_report_analysis_when_disabled() {
+        let mut runtime = runtime_settings();
+        runtime.use_financial_report_data = false;
+        let mut agent_data = StockAgentData::default();
+        agent_data.financial_report_analysis = Some(FinancialAnalysisPromptContext {
+            key_summary: "收入稳定增长".into(),
+            positive_factors: "经营现金流改善".into(),
+            negative_factors: "费用率上升".into(),
+            fraud_risk_points: "暂无明显异常".into(),
+            raw_sections: vec![serde_json::json!({"section": "income_statement"})],
+        });
+        let mut rows = sample_rows();
+        let row = rows.remove(0);
+
+        let prompt = build_stock_agent_market_prompt(&row, &runtime, &agent_data, None);
+        let value: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+
+        assert!(value
+            .pointer("/stock_context/financial_report_analysis")
+            .is_none());
     }
 
     #[test]
@@ -235,8 +307,15 @@ mod tests {
             .find(|row| row.symbol == "SHSE.600000")
             .expect("sample row should exist");
 
-        let run = normalize_model_recommendation(&payload, &row, &sample_rows(), &runtime, 100_000.0, None)
-            .expect("blocked payload should still normalize");
+        let run = normalize_model_recommendation(
+            &payload,
+            &row,
+            &sample_rows(),
+            &runtime,
+            100_000.0,
+            None,
+        )
+        .expect("blocked payload should still normalize");
 
         assert!(!run.has_trade);
         assert_eq!(run.risk_status, "blocked");
@@ -326,6 +405,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_no_trade_payload_with_numeric_invalidation() {
+        let payload = parse_model_recommendation(
+            r#"{"has_trade":false,"direction":"观望","confidence_score":40,"rationale":"价格趋势向下。","entry_low":0,"entry_high":0,"stop_loss":0,"take_profit":0,"amount_cny":0,"invalidation":0,"max_loss_cny":0}"#,
+        )
+        .expect("numeric invalidation should parse");
+
+        assert!(!payload.has_trade);
+        assert_eq!(payload.invalidation.as_deref(), Some("0"));
+        assert_eq!(payload.take_profit.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn parses_numeric_plan_fields_from_numbers_or_strings() {
+        let payload = parse_model_recommendation(
+            r#"{"has_trade":true,"direction":"买入","confidence_score":"72","rationale":"量价结构改善。","entry_low":"8.61","entry_high":8.66,"stop_loss":"8.42","take_profit":8.90,"amount_cny":"12000","invalidation":8.42,"max_loss_cny":"330"}"#,
+        )
+        .expect("numeric plan fields should parse from numbers or strings");
+
+        assert_eq!(payload.confidence_score, Some(72.0));
+        assert_eq!(payload.entry_low, Some(8.61));
+        assert_eq!(payload.entry_high, Some(8.66));
+        assert_eq!(payload.stop_loss, Some(8.42));
+        assert_eq!(payload.take_profit.as_deref(), Some("8.9"));
+        assert_eq!(payload.amount_cny, Some(12000.0));
+        assert_eq!(payload.invalidation.as_deref(), Some("8.42"));
+        assert_eq!(payload.max_loss_cny, Some(330.0));
+    }
+
+    #[test]
     fn rejects_no_trade_payload_without_rationale() {
         let error =
             parse_model_recommendation(r#"{"has_trade":false,"no_trade_reason":"No setup."}"#)
@@ -364,8 +472,15 @@ mod tests {
             .find(|row| row.symbol == "SHSE.600000")
             .expect("sample row should exist");
 
-        let run = normalize_model_recommendation(&payload, &row, &sample_rows(), &runtime, 10_000.0, None)
-            .expect("no-trade payload should normalize");
+        let run = normalize_model_recommendation(
+            &payload,
+            &row,
+            &sample_rows(),
+            &runtime,
+            10_000.0,
+            None,
+        )
+        .expect("no-trade payload should normalize");
 
         assert_eq!(run.symbol.as_deref(), Some("SHSE.600000"));
         assert_eq!(run.stock_name.as_deref(), Some("浦发银行"));
@@ -446,6 +561,10 @@ mod tests {
             scan_scope: "all_markets".into(),
             watchlist_symbols: Vec::new(),
             daily_max_ai_calls: 24,
+            use_bid_ask_data: true,
+            use_financial_report_data: false,
+            ai_kline_bar_count: 60,
+            ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
             pause_after_consecutive_losses: 3,
             min_confidence_score: 60.0,
             allowed_markets: "all".into(),
@@ -597,7 +716,17 @@ struct StockAgentData {
     stock_info: Value,
     bid_ask: Value,
     kline_data: PromptKlineContext,
+    financial_report_analysis: Option<FinancialAnalysisPromptContext>,
     messages: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FinancialAnalysisPromptContext {
+    pub key_summary: String,
+    pub positive_factors: String,
+    pub negative_factors: String,
+    pub fraud_risk_points: String,
+    pub raw_sections: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -682,6 +811,7 @@ struct ModelRecommendation {
     take_profit: Option<String>,
     #[serde(default, deserialize_with = "deserialize_f64_flexible")]
     amount_cny: Option<f64>,
+    #[serde(default, deserialize_with = "deserialize_number_or_string")]
     invalidation: Option<String>,
     #[serde(default, deserialize_with = "deserialize_f64_flexible")]
     max_loss_cny: Option<f64>,
@@ -695,6 +825,7 @@ pub async fn generate_trade_plan(
     symbol: Option<&str>,
     enabled_exchanges: &[String],
     positions: &[PositionContext],
+    financial_analyses: &HashMap<String, FinancialAnalysisPromptContext>,
 ) -> anyhow::Result<Vec<GeneratedTradePlan>> {
     if market_rows.is_empty() {
         bail!("No live market data was available for the enabled exchanges.");
@@ -740,14 +871,20 @@ pub async fn generate_trade_plan(
         let api_key = api_key.clone();
         let system_prompt = system_prompt.clone();
         let decision_rows = decision_rows.clone();
+        let financial_analysis = financial_analyses.get(&row.symbol).cloned();
         let position_context = positions
             .iter()
             .find(|position| position.symbol == row.symbol)
             .cloned();
         async move {
-            let agent_data = fetch_stock_agent_data(&row.symbol, 60).await;
-            let user_prompt =
-                build_stock_agent_market_prompt(&row, &runtime, &agent_data, position_context.as_ref());
+            let mut agent_data = fetch_stock_agent_data(&row.symbol, &runtime).await;
+            agent_data.financial_report_analysis = financial_analysis;
+            let user_prompt = build_stock_agent_market_prompt(
+                &row,
+                &runtime,
+                &agent_data,
+                position_context.as_ref(),
+            );
             let content = call_text_model(&runtime, &api_key, &system_prompt, &user_prompt)
                 .await
                 .map(|value| strip_think_blocks(&value));
@@ -857,6 +994,72 @@ pub async fn generate_trade_plan(
         .collect()
 }
 
+pub async fn generate_trade_plan_with_historical_context(
+    settings_service: &SettingsService,
+    row: &MarketListRow,
+    decision_rows: &[MarketListRow],
+    account_equity_usdt: f64,
+    position_context: Option<&PositionContext>,
+    stock_info: Value,
+    bid_ask: Option<Value>,
+    kline_bars: HashMap<String, Vec<[f64; 4]>>,
+) -> anyhow::Result<GeneratedTradePlan> {
+    let api_key = match settings_service.model_api_key()? {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => bail!("Model API key is not configured."),
+    };
+    let runtime = settings_service.get_runtime_settings();
+    let system_prompt = build_system_prompt(&runtime);
+    let mut agent_data = StockAgentData::default();
+    agent_data.stock_info = stock_info;
+    agent_data.bid_ask = bid_ask.unwrap_or_else(|| json!({}));
+    for (interval, bars) in kline_bars {
+        agent_data.kline_data.bars.insert(
+            interval,
+            bars.into_iter()
+                .map(|bar| {
+                    [
+                        compress_ohlc(bar[0]),
+                        compress_ohlc(bar[1]),
+                        compress_ohlc(bar[2]),
+                        compress_ohlc(bar[3]),
+                    ]
+                })
+                .collect(),
+        );
+    }
+    agent_data
+        .messages
+        .insert("source".into(), "历史回测快照，不读取当前行情。".into());
+
+    let user_prompt = build_stock_agent_market_prompt(row, &runtime, &agent_data, position_context);
+    let content = call_text_model(&runtime, &api_key, &system_prompt, &user_prompt)
+        .await
+        .map(|value| strip_think_blocks(&value))?;
+    let parsed = parse_model_recommendation(&content)?;
+    let run = normalize_model_recommendation(
+        &parsed,
+        row,
+        decision_rows,
+        &runtime,
+        account_equity_usdt,
+        position_context,
+    )?;
+
+    Ok(GeneratedTradePlan {
+        run,
+        ai_raw_output: serde_json::to_string(&content)?,
+        ai_structured_output: serde_json::to_string(&json!({
+            "mode": "historical_backtest",
+            "input_stock_code": row.symbol,
+            "input_stock_name": row.base_asset,
+            "structured_output": parsed,
+        }))?,
+        system_prompt,
+        user_prompt,
+    })
+}
+
 fn symbol_recommendation_from_run(run: &RecommendationRunDto) -> Option<SymbolRecommendationDto> {
     Some(SymbolRecommendationDto {
         symbol: run.symbol.clone()?,
@@ -879,20 +1082,33 @@ fn stock_agent_fetch_plan_labels() -> Vec<&'static str> {
     ]
 }
 
-async fn fetch_stock_agent_data(symbol: &str, count: usize) -> StockAgentData {
+async fn fetch_stock_agent_data(symbol: &str, runtime: &RuntimeSettingsDto) -> StockAgentData {
     let stock_info_symbol = symbol.to_string();
     let bid_ask_symbol = symbol.to_string();
-    let kline_symbols = ["5m", "1h", "1d", "1w"]
-        .into_iter()
+    let count = runtime.ai_kline_bar_count.max(1) as usize;
+    let use_bid_ask_data = runtime.use_bid_ask_data;
+    let kline_symbols = runtime
+        .ai_kline_frequencies
+        .iter()
         .map(|frequency| (frequency.to_string(), symbol.to_string()))
         .collect::<Vec<_>>();
 
     let stock_info_task = fetch_agent_json("stock_info", move || {
         crate::market::akshare::fetch_stock_info(&stock_info_symbol)
     });
-    let bid_ask_task = fetch_agent_json("bid_ask", move || {
-        crate::market::akshare::fetch_bid_ask(&bid_ask_symbol)
-    });
+    let bid_ask_task = async move {
+        if use_bid_ask_data {
+            fetch_agent_json("bid_ask", move || {
+                crate::market::akshare::fetch_bid_ask(&bid_ask_symbol)
+            })
+            .await
+        } else {
+            AgentFetchResult {
+                value: Some(json!({})),
+                message: Some("bid_ask 已按 AI 数据设置关闭。".into()),
+            }
+        }
+    };
     let kline_tasks = kline_symbols.into_iter().map(move |(frequency, symbol)| {
         let label = format!("kline_{frequency}");
         async move {
@@ -920,7 +1136,7 @@ async fn fetch_stock_agent_data(symbol: &str, count: usize) -> StockAgentData {
         if let Some(bars) = result.value {
             data.kline_data
                 .bars
-                .insert(frequency.clone(), prompt_ohlc_from_bars(&bars));
+                .insert(frequency.clone(), prompt_ohlc_from_bars(&bars, count));
         } else {
             data.kline_data.bars.insert(frequency.clone(), Vec::new());
         }
@@ -943,7 +1159,10 @@ where
     fetch_agent_value(label, fetch).await
 }
 
-async fn fetch_agent_bars<F>(label: &str, fetch: F) -> AgentFetchResult<Vec<crate::models::OhlcvBar>>
+async fn fetch_agent_bars<F>(
+    label: &str,
+    fetch: F,
+) -> AgentFetchResult<Vec<crate::models::OhlcvBar>>
 where
     F: FnOnce() -> anyhow::Result<Vec<crate::models::OhlcvBar>> + Send + 'static,
 {
@@ -975,10 +1194,10 @@ where
     }
 }
 
-fn prompt_ohlc_from_bars(bars: &[crate::models::OhlcvBar]) -> Vec<[String; 4]> {
+fn prompt_ohlc_from_bars(bars: &[crate::models::OhlcvBar], count: usize) -> Vec<[String; 4]> {
     bars.iter()
         .rev()
-        .take(5)
+        .take(count)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
@@ -1002,11 +1221,7 @@ fn select_aggregate_recommendation(
             .has_trade
             .cmp(&left.has_trade)
             .then(right.risk_status.cmp(&left.risk_status))
-            .then(
-                right
-                    .confidence_score
-                    .total_cmp(&left.confidence_score),
-            )
+            .then(right.confidence_score.total_cmp(&left.confidence_score))
             .then(right.generated_at.cmp(&left.generated_at))
     });
     let mut selected = runs
@@ -1174,6 +1389,29 @@ fn build_stock_agent_market_prompt(
     } else {
         vec!["买入", "观望"]
     };
+    let kline_data = kline_prompt_value(agent_data);
+    let mut stock_context = json!({
+        "stock_code": row.symbol,
+        "stock_name": row.base_asset,
+        "last_price": row.last_price,
+        "change_24h": row.change_24h,
+        "volume_24h": row.volume_24h,
+        "spread_bps": row.spread_bps,
+        "ticker_bias": ticker_bias(row),
+        "snapshot_age_sec": snapshot_age_seconds(&row.updated_at),
+        "stock_info": agent_data.stock_info,
+        "bid_ask": agent_data.bid_ask,
+        "kline_data": kline_data,
+        "messages": agent_data.messages
+    });
+    if runtime.use_financial_report_data {
+        if let Some(financial_report_analysis) = &agent_data.financial_report_analysis {
+            stock_context
+                .as_object_mut()
+                .expect("stock context should be an object")
+                .insert("financial_report_analysis".into(), json!(financial_report_analysis));
+        }
+    }
     serde_json::to_string(&json!({
         "request_meta": {
             "trigger_type": "manual_or_auto",
@@ -1183,26 +1421,7 @@ fn build_stock_agent_market_prompt(
             "data_source": "akshare",
             "generated_at": current_rfc3339_timestamp().unwrap_or_default()
         },
-        "stock_context": {
-            "stock_code": row.symbol,
-            "stock_name": row.base_asset,
-            "last_price": row.last_price,
-            "change_24h": row.change_24h,
-            "volume_24h": row.volume_24h,
-            "spread_bps": row.spread_bps,
-            "ticker_bias": ticker_bias(row),
-            "snapshot_age_sec": snapshot_age_seconds(&row.updated_at),
-            "stock_info": agent_data.stock_info,
-            "bid_ask": agent_data.bid_ask,
-            "kline_data": {
-                "5m": agent_data.kline_data.bars.get("5m").cloned().unwrap_or_default(),
-                "1h": agent_data.kline_data.bars.get("1h").cloned().unwrap_or_default(),
-                "1d": agent_data.kline_data.bars.get("1d").cloned().unwrap_or_default(),
-                "1w": agent_data.kline_data.bars.get("1w").cloned().unwrap_or_default(),
-                "messages": agent_data.kline_data.messages,
-            },
-            "messages": agent_data.messages
-        },
+        "stock_context": stock_context,
         "position_context": position_context,
         "allowed_directions_for_this_stock": allowed_directions,
         "risk_settings": {
@@ -1230,6 +1449,15 @@ fn build_stock_agent_market_prompt(
         }
     }))
     .expect("stock agent prompt JSON should serialize")
+}
+
+fn kline_prompt_value(agent_data: &StockAgentData) -> Value {
+    let mut value = serde_json::Map::new();
+    for (frequency, bars) in &agent_data.kline_data.bars {
+        value.insert(frequency.clone(), json!(bars));
+    }
+    value.insert("messages".into(), json!(agent_data.kline_data.messages));
+    Value::Object(value)
 }
 
 struct ScoredMarketRow<'a> {
@@ -1681,6 +1909,10 @@ fn runtime_from_model_test_payload(payload: &ModelConnectionTestPayloadDto) -> R
         scan_scope: "all_markets".into(),
         watchlist_symbols: Vec::new(),
         daily_max_ai_calls: 24,
+        use_bid_ask_data: true,
+        use_financial_report_data: false,
+        ai_kline_bar_count: 60,
+        ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
         pause_after_consecutive_losses: 3,
         min_confidence_score: 60.0,
         allowed_markets: "all".into(),
@@ -1874,8 +2106,7 @@ fn normalize_model_recommendation(
     let market_type = "ashare".to_string();
     let rationale = payload.rationale.clone();
     let market_context = market_rows.iter().find(|row| {
-        row.symbol == input_row.symbol
-            && row.market_type.eq_ignore_ascii_case("ashare")
+        row.symbol == input_row.symbol && row.market_type.eq_ignore_ascii_case("ashare")
     });
     let exchanges = market_context
         .map(|row| row.exchanges.clone())
@@ -1927,7 +2158,8 @@ fn normalize_model_recommendation(
     }
 
     let requested_sell = is_sell_direction(payload.direction.as_deref());
-    let direction = normalize_a_share_direction(payload.direction.as_deref(), position_context.is_some());
+    let direction =
+        normalize_a_share_direction(payload.direction.as_deref(), position_context.is_some());
     if requested_sell && position_context.is_none() {
         return Ok(RecommendationRunDto {
             recommendation_id: new_recommendation_id("blocked", &input_row.symbol),
@@ -1995,7 +2227,11 @@ fn normalize_model_recommendation(
         &CandidatePlan {
             symbol: symbol.clone().unwrap_or_else(|| "A股观察池".into()),
             market_type: market_type.clone(),
-            direction: if is_sell { "sell".into() } else { "long".into() },
+            direction: if is_sell {
+                "sell".into()
+            } else {
+                "long".into()
+            },
             leverage,
             stop_loss,
             entry_low,

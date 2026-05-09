@@ -21,6 +21,9 @@ __pycache__/
 .env.*
 !.env.example
 prompts.md
+AGENTS.md
+DESIGN.md
+PRODUCT.md
 docs/
 
 # Tauri / Rust generated files
@@ -29,6 +32,9 @@ src-tauri/gen/schemas
 
 # Editor directories and files
 .vscode/*
+.claude/
+.codex/
+openspec/
 !.vscode/extensions.json
 .idea
 .DS_Store

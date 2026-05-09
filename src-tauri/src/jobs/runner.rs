@@ -12,6 +12,8 @@ pub fn route_job_kind(kind: &str) -> &'static str {
         crate::jobs::kinds::CREDENTIAL_VALIDATE => "credential.validate",
         crate::jobs::kinds::PORTFOLIO_REFRESH => "portfolio.refresh",
         crate::jobs::kinds::ASSISTANT_RUN => "assistant.run",
+        crate::jobs::kinds::FINANCIAL_REPORT_FETCH => "financial_report.fetch",
+        crate::jobs::kinds::FINANCIAL_REPORT_ANALYZE => "financial_report.analyze",
         _ => "noop",
     }
 }

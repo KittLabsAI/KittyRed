@@ -56,6 +56,13 @@ def handle_request(
         )
         return {"ok": True, "data": data}
 
+    if action == "financial_reports":
+        data = adapter.financial_reports(
+            symbol=str(payload.get("symbol", "")).strip(),
+            years=int(payload.get("years", 2)),
+        )
+        return {"ok": True, "data": data}
+
     if action == "search_stocks":
         data = adapter.search_stocks(
             query=str(payload.get("query", "")).strip(),

@@ -13,6 +13,8 @@ export const navigationItems: NavigationItem[] = [
   { to: "/pair-detail", label: "个股详情" },
   { to: "/positions", label: "持仓" },
   { to: "/recommendations", label: "AI投资建议", end: true },
+  { to: "/backtest", label: "AI回测" },
+  { to: "/financial-reports", label: "财报分析" },
   { to: "/signals", label: "策略信号" },
   { to: "/settings", label: "设置" },
 ];

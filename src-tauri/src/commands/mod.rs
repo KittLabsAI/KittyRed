@@ -1,6 +1,8 @@
 pub mod akshare;
 pub mod app;
 pub mod assistant;
+pub mod backtest;
+pub mod financial_reports;
 pub mod jobs;
 pub mod market;
 pub mod paper;

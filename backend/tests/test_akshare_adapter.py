@@ -15,8 +15,11 @@ class FakeAkshareClient:
         self.xq_failures = set()
         self.failures_before_success = failures_before_success
         self.hist_failures_before_success = 0
+        self.minute_failures_before_success = 0
         self.hist_min_calls = []
         self.sina_minute_calls = []
+        self.financial_calls = []
+        self.financial_failures = set()
 
     def stock_individual_spot_xq(self, symbol):
         self.xq_calls.append(symbol)
@@ -119,6 +122,9 @@ class FakeAkshareClient:
                 "adjust": adjust,
             }
         )
+        if self.minute_failures_before_success:
+            self.minute_failures_before_success -= 1
+            raise ConnectionError("sina ssl disconnected")
         self.sina_minute_call = {
             "symbol": symbol,
             "period": period,
@@ -225,6 +231,47 @@ class FakeAkshareClient:
                 {"trade_date": "2026-05-07"},
             ]
         )
+
+    def _financial_rows(self, endpoint, date):
+        self.financial_calls.append((endpoint, date))
+        if endpoint in self.financial_failures:
+            raise ConnectionError(f"{endpoint} disconnected")
+        return pd.DataFrame(
+            [
+                {
+                    "股票代码": "600000",
+                    "股票简称": "浦发银行",
+                    "报告期": date,
+                    "营业收入": 100.5,
+                    "净利润": 20.25,
+                },
+                {
+                    "股票代码": "000001",
+                    "股票简称": "平安银行",
+                    "报告期": date,
+                    "营业收入": 88.0,
+                    "净利润": 16.0,
+                },
+            ]
+        )
+
+    def stock_yjbb_em(self, date):
+        return self._financial_rows("stock_yjbb_em", date)
+
+    def stock_yjkb_em(self, date):
+        return self._financial_rows("stock_yjkb_em", date)
+
+    def stock_yjyg_em(self, date):
+        return self._financial_rows("stock_yjyg_em", date)
+
+    def stock_zcfz_em(self, date):
+        return self._financial_rows("stock_zcfz_em", date)
+
+    def stock_lrb_em(self, date):
+        return self._financial_rows("stock_lrb_em", date)
+
+    def stock_xjll_em(self, date):
+        return self._financial_rows("stock_xjll_em", date)
 
 
 class SlowKlineClient(FakeAkshareClient):
@@ -423,6 +470,36 @@ class AkshareAdapterTest(unittest.TestCase):
         self.assertEqual(bars[0]["open_time"], "2026-05-07 11:30:00")
         self.assertEqual(bars[0]["close"], 9.15)
 
+    def test_history_bars_retries_sina_minute_history_once(self):
+        client = FakeAkshareClient()
+        client.minute_failures_before_success = 1
+        adapter = AkshareAdapter(
+            client,
+            now=lambda: datetime(2026, 5, 6, 10, 10),
+            history_attempts=2,
+            history_retry_backoff_seconds=0,
+        )
+
+        bars = adapter.history_bars("SHSE.600000", "5m", 40)
+
+        self.assertEqual(len(client.sina_minute_calls), 2)
+        self.assertEqual(bars[0]["close"], 9.15)
+
+    def test_history_bars_reports_sina_minute_failure_after_retry_limit(self):
+        client = FakeAkshareClient()
+        client.minute_failures_before_success = 2
+        adapter = AkshareAdapter(
+            client,
+            now=lambda: datetime(2026, 5, 6, 10, 10),
+            history_attempts=2,
+            history_retry_backoff_seconds=0,
+        )
+
+        with self.assertRaises(ConnectionError):
+            adapter.history_bars("SHSE.600000", "5m", 40)
+
+        self.assertEqual(len(client.sina_minute_calls), 2)
+
     def test_history_bars_fallback_daily_merges_realtime_bar_when_hist_disconnects(self):
         client = FakeAkshareClient()
         client.hist_failures_before_success = 1
@@ -470,6 +547,74 @@ class AkshareAdapterTest(unittest.TestCase):
 
         with self.assertRaises(NotImplementedError):
             adapter.submit_order("SHSE.600000", "buy", 100)
+
+    def test_financial_reports_fetches_all_required_akshare_sections_for_all_stocks(self):
+        client = FakeAkshareClient()
+        adapter = AkshareAdapter(client, now=lambda: datetime(2026, 5, 8))
+
+        result = adapter.financial_reports(years=2)
+
+        self.assertEqual(result["stock_code"], "ALL")
+        self.assertEqual(result["years"], 2)
+        self.assertEqual(
+            {section["section"] for section in result["sections"]},
+            {
+                "performance_report",
+                "performance_express",
+                "performance_forecast",
+                "balance_sheet",
+                "income_statement",
+                "cash_flow_statement",
+            },
+        )
+        self.assertTrue(
+            all(section["source"].startswith("akshare:") for section in result["sections"])
+        )
+        self.assertTrue(all(section["rows"] for section in result["sections"]))
+        self.assertNotIn(("stock_yjbb_em", "20260630"), client.financial_calls)
+        self.assertIn(("stock_yjbb_em", "20260331"), client.financial_calls)
+        self.assertIn(("stock_xjll_em", "20240630"), client.financial_calls)
+        self.assertNotIn(("stock_yjbb_em", "20240331"), client.financial_calls)
+        stock_codes = {row["stock_code"] for row in result["sections"][0]["rows"]}
+        self.assertIn("SHSE.600000", stock_codes)
+        self.assertIn("SZSE.000001", stock_codes)
+
+    def test_financial_reports_filters_to_latest_two_year_report_window(self):
+        client = FakeAkshareClient()
+        adapter = AkshareAdapter(client, now=lambda: datetime(2026, 5, 8))
+
+        result = adapter.financial_reports(years=2)
+        rows = result["sections"][0]["rows"]
+
+        self.assertNotIn("2024-03-31", {row["report_date"] for row in rows})
+        self.assertIn("2024-06-30", {row["report_date"] for row in rows})
+
+    def test_financial_reports_keeps_section_error_without_dropping_successes(self):
+        client = FakeAkshareClient()
+        client.financial_failures.add("stock_lrb_em")
+        adapter = AkshareAdapter(client, now=lambda: datetime(2026, 5, 8))
+
+        result = adapter.financial_reports(years=2)
+        income = next(
+            section for section in result["sections"] if section["section"] == "income_statement"
+        )
+        balance = next(
+            section for section in result["sections"] if section["section"] == "balance_sheet"
+        )
+
+        self.assertEqual(income["rows"], [])
+        self.assertIn("读取失败", income["error"])
+        self.assertTrue(balance["rows"])
+
+    def test_handle_request_returns_financial_reports(self):
+        response = handle_request(
+            {"action": "financial_reports", "years": 2},
+            adapter=AkshareAdapter(FakeAkshareClient(), now=lambda: datetime(2026, 5, 8)),
+        )
+
+        self.assertEqual(response["ok"], True)
+        self.assertEqual(response["data"]["stock_code"], "ALL")
+        self.assertEqual(len(response["data"]["sections"]), 6)
 
 
 if __name__ == "__main__":

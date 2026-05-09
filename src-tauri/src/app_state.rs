@@ -1,4 +1,6 @@
 use crate::assistant::AssistantService;
+use crate::backtest::BacktestService;
+use crate::financial_reports::FinancialReportService;
 use crate::jobs::JobService;
 use crate::market::MarketDataService;
 use crate::notifications::NotificationService;
@@ -103,11 +105,15 @@ pub struct AppState {
     pub recommendation_service: RecommendationService,
     pub assistant_service: AssistantService,
     pub signal_service: SignalService,
+    pub backtest_service: BacktestService,
+    pub financial_report_service: FinancialReportService,
 }
 
 impl AppState {
     pub fn new(settings_path: PathBuf, app_handle: tauri::AppHandle) -> Self {
         let recommendation_path = recommendation_path_for(&settings_path);
+        let backtest_path = backtest_path_for(&settings_path);
+        let financial_report_path = financial_report_path_for(&settings_path);
         let market_cache_path = market_cache_path_for(&settings_path);
         let paper_path = paper_path_for(&settings_path);
         let job_history_path = recommendation_path.clone();
@@ -137,6 +143,10 @@ impl AppState {
             notification_service,
             recommendation_service,
             signal_service,
+            backtest_service: BacktestService::new(backtest_path)
+                .expect("backtest service should initialize"),
+            financial_report_service: FinancialReportService::new(financial_report_path)
+                .expect("financial report service should initialize"),
         };
 
         spawn_auto_analyze_worker(
@@ -146,6 +156,7 @@ impl AppState {
             state.recommendation_service.clone(),
             state.notification_service.clone(),
             state.paper_service.clone(),
+            state.financial_report_service.clone(),
             app_handle,
         );
         spawn_market_ticker_refresh_worker(
@@ -156,6 +167,11 @@ impl AppState {
         crate::commands::paper::resume_pending_paper_order_jobs(
             state.job_service.clone(),
             state.paper_service.clone(),
+        );
+        crate::commands::backtest::resume_pending_backtest_jobs(
+            state.backtest_service.clone(),
+            state.market_data_service.clone(),
+            state.settings_service.clone(),
         );
         spawn_stock_universe_cache_worker(state.market_data_service.clone());
         state
@@ -181,6 +197,20 @@ fn market_cache_path_for(settings_path: &PathBuf) -> PathBuf {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     parent.join("kittyalpha.market.sqlite3")
+}
+
+fn backtest_path_for(settings_path: &PathBuf) -> PathBuf {
+    settings_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("kittyred.backtest.sqlite3")
+}
+
+fn financial_report_path_for(settings_path: &PathBuf) -> PathBuf {
+    settings_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("kittyred.financial_reports.sqlite3")
 }
 
 fn spawn_market_ticker_refresh_worker(

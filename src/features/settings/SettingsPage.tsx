@@ -8,6 +8,7 @@ import {
   saveSettingsFormData,
   testModelConnection,
   type ModelInterfaceSetting,
+  type AiKlineFrequency,
   type SettingsFormData,
 } from "../../lib/settings";
 import { getAkshareCurrentQuote } from "../../lib/akshare";
@@ -29,6 +30,16 @@ const tabs: SettingsTab[] = [
 const modelInterfaceOptions: Array<{ id: ModelInterfaceSetting; label: string }> = [
   { id: "OpenAI-compatible", label: "OpenAI 兼容" },
   { id: "Anthropic-compatible", label: "Anthropic 兼容" },
+];
+
+const aiKlineFrequencyOptions: Array<{ id: AiKlineFrequency; label: string }> = [
+  { id: "1m", label: "1分钟" },
+  { id: "5m", label: "5分钟" },
+  { id: "30m", label: "30分钟" },
+  { id: "1h", label: "1小时" },
+  { id: "1d", label: "1天" },
+  { id: "1w", label: "1周" },
+  { id: "1M", label: "1月" },
 ];
 
 function modelProviderOptions(currentPreset: string) {
@@ -156,6 +167,18 @@ export function SettingsPage() {
     } finally {
       setIsTestingModel(false);
     }
+  }
+
+  function toggleAiKlineFrequency(frequency: AiKlineFrequency) {
+    setForm((current) => {
+      const selected = current.aiKlineFrequencies.includes(frequency)
+        ? current.aiKlineFrequencies.filter((item) => item !== frequency)
+        : [...current.aiKlineFrequencies, frequency];
+      return {
+        ...current,
+        aiKlineFrequencies: selected.length > 0 ? selected : [frequency],
+      };
+    });
   }
 
   return (
@@ -303,26 +326,82 @@ export function SettingsPage() {
 
           {activeTab === "aiTrade" ? (
             <div className="settings-trade-grid">
-              <section className="settings-section-block">
-                <span className="section-label">AI分析</span>
-                <div className="form-grid form-grid--three">
-                  <Field label="自动分析频率">
-                    <select value={form.autoAnalyzeFrequency} onChange={(event) => setForm((current) => ({ ...current, autoAnalyzeFrequency: event.target.value as SettingsFormData["autoAnalyzeFrequency"] }))}>
-                      <option value="5m">5 分钟</option>
-                      <option value="10m">10 分钟</option>
-                      <option value="30m">30 分钟</option>
-                      <option value="1h">1 小时</option>
-                    </select>
-                  </Field>
-                  <Field label="扫描范围">
-                    <select value={form.scanScope} onChange={(event) => setForm((current) => ({ ...current, scanScope: event.target.value as SettingsFormData["scanScope"] }))}>
-                      <option value="watchlist_only">仅自选股</option>
-                      <option value="all_markets">全部缓存股票</option>
-                    </select>
-                  </Field>
-                  <Field label="每日 AI 调用上限">
-                    <input inputMode="numeric" value={form.dailyMaxAiCalls} onChange={(event) => setForm((current) => ({ ...current, dailyMaxAiCalls: Number(event.target.value) || 0 }))} />
-                  </Field>
+              <section className="settings-section-block settings-ai-analysis-card">
+                <div className="settings-section-block__header">
+                  <div>
+                    <span className="section-label">AI分析</span>
+                    <h3>推荐与回测共用的数据输入</h3>
+                  </div>
+                </div>
+                <div className="settings-ai-analysis-card__grid">
+                  <div className="settings-ai-row settings-ai-row--schedule">
+                    <Field label="自动分析频率">
+                      <select value={form.autoAnalyzeFrequency} onChange={(event) => setForm((current) => ({ ...current, autoAnalyzeFrequency: event.target.value as SettingsFormData["autoAnalyzeFrequency"] }))}>
+                        <option value="5m">5 分钟</option>
+                        <option value="10m">10 分钟</option>
+                        <option value="30m">30 分钟</option>
+                        <option value="1h">1 小时</option>
+                      </select>
+                    </Field>
+                    <Field label="扫描范围">
+                      <select value={form.scanScope} onChange={(event) => setForm((current) => ({ ...current, scanScope: event.target.value as SettingsFormData["scanScope"] }))}>
+                        <option value="watchlist_only">仅自选股</option>
+                        <option value="all_markets">全部缓存股票</option>
+                      </select>
+                    </Field>
+                    <Field label="每日 AI 调用上限">
+                      <input inputMode="numeric" value={form.dailyMaxAiCalls} onChange={(event) => setForm((current) => ({ ...current, dailyMaxAiCalls: Number(event.target.value) || 0 }))} />
+                    </Field>
+                  </div>
+                  <div className="settings-ai-row settings-ai-row--inputs">
+                    <label className="settings-ai-toggle-field">
+                      <span>使用买卖盘数据</span>
+                      <input
+                        aria-label="使用买卖盘数据"
+                        checked={form.useBidAskData}
+                        onChange={(event) => setForm((current) => ({ ...current, useBidAskData: event.target.checked }))}
+                        type="checkbox"
+                      />
+                    </label>
+                    <label className="settings-ai-toggle-field">
+                      <span>使用财报数据</span>
+                      <input
+                        aria-label="使用财报数据"
+                        checked={form.useFinancialReportData}
+                        onChange={(event) => setForm((current) => ({ ...current, useFinancialReportData: event.target.checked }))}
+                        type="checkbox"
+                      />
+                    </label>
+                  </div>
+                  <div className="settings-ai-row settings-ai-row--levels">
+                    <label className="settings-ai-number-field">
+                      <span>K线根数</span>
+                      <input
+                        aria-label="K线根数"
+                        className="settings-inline-number"
+                        inputMode="numeric"
+                        min={1}
+                        type="number"
+                        value={form.aiKlineBarCount}
+                        onChange={(event) => setForm((current) => ({ ...current, aiKlineBarCount: Math.max(1, Number(event.target.value) || 1) }))}
+                      />
+                    </label>
+                    <div className="settings-ai-kline-field">
+                      <span>K线级别</span>
+                      <div className="settings-kline-levels__options" aria-label="K线级别">
+                        {aiKlineFrequencyOptions.map((option) => (
+                          <label key={option.id}>
+                            <input
+                              checked={form.aiKlineFrequencies.includes(option.id)}
+                              onChange={() => toggleAiKlineFrequency(option.id)}
+                              type="checkbox"
+                            />
+                            <span>{option.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </section>
 

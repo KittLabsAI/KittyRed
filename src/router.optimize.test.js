@@ -8,9 +8,11 @@ describe("router loading performance", () => {
     expect(routerSource).toContain("lazy(");
     expect(routerSource).toContain("Suspense");
     expect(routerSource).toContain("import(\"./features/dashboard/DashboardPage\")");
+    expect(routerSource).toContain("import(\"./features/financial-reports/FinancialReportsPage\")");
     expect(routerSource).not.toContain("import { DashboardPage }");
     expect(routerSource).not.toContain("features/orders/OrdersPage");
     expect(routerSource).toContain('path="orders"');
+    expect(routerSource).toContain('path="financial-reports"');
     expect(routerSource).toContain('to="/positions"');
   });
 

@@ -7,8 +7,9 @@ pub mod risk_engine;
 #[cfg(test)]
 mod tests {
     use super::{
-        append_pending_history_row, build_trade_plan, missing_evaluation_horizons,
-        refresh_history_row_from_bars,
+        append_pending_history_row, build_missing_evaluations_from_bar_sets, build_trade_plan,
+        missing_evaluation_horizons, parse_rfc3339_millis, refresh_history_row_from_bars,
+        round_percent, EvaluationBarSets,
     };
     use crate::market::MarketDataService;
     use crate::models::{
@@ -17,6 +18,7 @@ mod tests {
     };
     use crate::recommendations::ledger::RecommendationEvaluation;
     use crate::recommendations::risk_engine;
+    use std::collections::HashSet;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -185,6 +187,10 @@ mod tests {
             scan_scope: "all_markets".into(),
             watchlist_symbols: Vec::new(),
             daily_max_ai_calls: 24,
+            use_bid_ask_data: true,
+            use_financial_report_data: false,
+            ai_kline_bar_count: 60,
+            ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
             pause_after_consecutive_losses: 3,
             min_confidence_score: 60.0,
             allowed_markets: "all".into(),
@@ -380,6 +386,132 @@ mod tests {
         assert!((updated.pnl_60m - 9.9).abs() < 0.0001);
         assert!((updated.pnl_24h - 19.9).abs() < 0.0001);
         assert!(updated.outcome.contains("24小时"));
+    }
+
+    #[test]
+    fn backfills_recommendation_windows_from_akshare_datetime_bars() {
+        let mut run = sample_persisted_no_trade_run();
+        run.recommendation_id = "rec-eval-akshare-time".into();
+        run.has_trade = true;
+        run.symbol = Some("SHSE.600000".into());
+        run.stock_name = Some("浦发银行".into());
+        run.direction = Some("买入".into());
+        run.market_type = "A 股".into();
+        run.entry_low = Some(9.9);
+        run.entry_high = Some(10.1);
+        run.generated_at = "2026-05-06T09:30:00+08:00".into();
+
+        let pending = append_pending_history_row(&run);
+        let bars = vec![
+            OhlcvBar {
+                open_time: "2026-05-06 09:35:00".into(),
+                open: 10.0,
+                high: 10.1,
+                low: 9.9,
+                close: 10.1,
+                volume: 100.0,
+                turnover: None,
+            },
+            OhlcvBar {
+                open_time: "2026-05-06 09:40:00".into(),
+                open: 10.1,
+                high: 10.25,
+                low: 10.0,
+                close: 10.2,
+                volume: 100.0,
+                turnover: None,
+            },
+            OhlcvBar {
+                open_time: "2026-05-06 10:30:00".into(),
+                open: 10.2,
+                high: 10.35,
+                low: 10.1,
+                close: 10.3,
+                volume: 100.0,
+                turnover: None,
+            },
+            OhlcvBar {
+                open_time: "2026-05-07 09:30:00".into(),
+                open: 10.3,
+                high: 10.55,
+                low: 10.2,
+                close: 10.5,
+                volume: 100.0,
+                turnover: None,
+            },
+        ];
+        let now_ms =
+            parse_rfc3339_millis("2026-05-07T10:00:00+08:00").expect("timestamp should parse");
+
+        let updated = refresh_history_row_from_bars(&run, &pending, &bars, now_ms)
+            .expect("formatted AKShare bars should be evaluated");
+
+        assert!((updated.pnl_10m - 1.9).abs() < 0.0001);
+        assert!((updated.pnl_60m - 2.9).abs() < 0.0001);
+        assert!((updated.pnl_24h - 4.9).abs() < 0.0001);
+    }
+
+    #[test]
+    fn short_recommendation_windows_do_not_use_daily_bars() {
+        let mut run = sample_persisted_no_trade_run();
+        run.recommendation_id = "rec-eval-window-source".into();
+        run.has_trade = true;
+        run.symbol = Some("SHSE.600000".into());
+        run.stock_name = Some("浦发银行".into());
+        run.direction = Some("买入".into());
+        run.market_type = "A 股".into();
+        run.entry_low = Some(9.9);
+        run.entry_high = Some(10.1);
+        run.generated_at = "2026-05-06T09:30:00+08:00".into();
+
+        let bar_sets = EvaluationBarSets {
+            intraday: vec![OhlcvBar {
+                open_time: "2026-05-06 09:40:00".into(),
+                open: 10.1,
+                high: 10.25,
+                low: 10.0,
+                close: 10.2,
+                volume: 100.0,
+                turnover: None,
+            }],
+            hourly: vec![OhlcvBar {
+                open_time: "2026-05-06 10:30:00".into(),
+                open: 10.2,
+                high: 10.35,
+                low: 10.1,
+                close: 10.3,
+                volume: 100.0,
+                turnover: None,
+            }],
+            daily: vec![OhlcvBar {
+                open_time: "2026-05-07".into(),
+                open: 14.8,
+                high: 15.2,
+                low: 14.5,
+                close: 15.0,
+                volume: 100.0,
+                turnover: None,
+            }],
+        };
+        let now_ms =
+            parse_rfc3339_millis("2026-05-07T10:00:00+08:00").expect("timestamp should parse");
+
+        let evaluations =
+            build_missing_evaluations_from_bar_sets(&run, &bar_sets, now_ms, &HashSet::new())
+                .expect("evaluations should build");
+        let pnl = evaluations
+            .iter()
+            .map(|evaluation| {
+                (
+                    evaluation.horizon.as_str(),
+                    round_percent(evaluation.estimated_pnl_percent),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert!(pnl.contains(&("10m", 1.9)));
+        assert!(pnl.contains(&("60m", 2.9)));
+        assert!(pnl.contains(&("24h", 49.9)));
     }
 
     #[tokio::test]
@@ -634,8 +766,8 @@ use std::sync::{Arc, RwLock};
 use anyhow::{anyhow, Context};
 use futures::future::join_all;
 use ledger::{PersistedRecommendation, RecommendationEvaluation, RecommendationLedger};
-use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use time::format_description::{parse as parse_time_format, well_known::Rfc3339};
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::market::{coin_info, MarketDataService};
 use crate::models::{
@@ -1140,24 +1272,33 @@ async fn refresh_missing_evaluations(
             (interval.to_string(), result)
         }
     });
-    let mut bars = Vec::new();
+    let mut bar_sets = EvaluationBarSets::default();
     for (interval, fetched) in join_all(fetches).await {
-        if let Some(fetched) = fetched {
+        let bars = if let Some(fetched) = fetched {
             market_data_service.cache_candle_bars(symbol, &interval, &fetched)?;
-            bars.extend(fetched);
+            fetched
         } else {
-            bars.extend(market_data_service.cached_candle_bars(symbol, &interval, 240));
+            market_data_service.cached_candle_bars(symbol, &interval, 240)
+        };
+        match interval.as_str() {
+            "5m" => bar_sets.intraday = normalize_evaluation_bars(bars),
+            "1h" => bar_sets.hourly = normalize_evaluation_bars(bars),
+            "1d" => bar_sets.daily = normalize_evaluation_bars(bars),
+            _ => {}
         }
     }
-    bars.sort_by(|left, right| left.open_time.cmp(&right.open_time));
-    bars.dedup_by(|left, right| left.open_time == right.open_time);
 
     let existing_horizons = existing
         .iter()
         .map(|evaluation| evaluation.horizon.as_str())
         .collect::<HashSet<_>>();
 
-    build_missing_evaluations(run, &bars, current_utc_millis(), &existing_horizons)
+    build_missing_evaluations_from_bar_sets(
+        run,
+        &bar_sets,
+        current_utc_millis(),
+        &existing_horizons,
+    )
 }
 
 fn evaluation_horizon_label(label: &str) -> &'static str {
@@ -1189,6 +1330,27 @@ fn build_missing_evaluations(
     now_ms: i64,
     existing_horizons: &HashSet<&str>,
 ) -> anyhow::Result<Vec<RecommendationEvaluation>> {
+    let bar_sets = EvaluationBarSets {
+        intraday: bars.to_vec(),
+        hourly: bars.to_vec(),
+        daily: bars.to_vec(),
+    };
+    build_missing_evaluations_from_bar_sets(run, &bar_sets, now_ms, existing_horizons)
+}
+
+#[derive(Default)]
+struct EvaluationBarSets {
+    intraday: Vec<OhlcvBar>,
+    hourly: Vec<OhlcvBar>,
+    daily: Vec<OhlcvBar>,
+}
+
+fn build_missing_evaluations_from_bar_sets(
+    run: &RecommendationRunDto,
+    bar_sets: &EvaluationBarSets,
+    now_ms: i64,
+    existing_horizons: &HashSet<&str>,
+) -> anyhow::Result<Vec<RecommendationEvaluation>> {
     let mut evaluations = Vec::new();
 
     for (label, horizon_ms) in EVALUATION_HORIZONS {
@@ -1196,12 +1358,34 @@ fn build_missing_evaluations(
             continue;
         }
 
-        if let Some(evaluation) = build_evaluation(run, bars, now_ms, label, horizon_ms)? {
-            evaluations.push(evaluation);
+        for bars in evaluation_bar_candidates(label, bar_sets) {
+            if let Some(evaluation) = build_evaluation(run, bars, now_ms, label, horizon_ms)? {
+                evaluations.push(evaluation);
+                break;
+            }
         }
     }
 
     Ok(evaluations)
+}
+
+fn evaluation_bar_candidates<'a>(
+    label: &str,
+    bar_sets: &'a EvaluationBarSets,
+) -> Vec<&'a [OhlcvBar]> {
+    match label {
+        "5m" | "10m" | "30m" => vec![bar_sets.intraday.as_slice()],
+        "60m" => vec![bar_sets.intraday.as_slice(), bar_sets.hourly.as_slice()],
+        "24h" => vec![bar_sets.hourly.as_slice(), bar_sets.daily.as_slice()],
+        "7d" => vec![bar_sets.daily.as_slice()],
+        _ => Vec::new(),
+    }
+}
+
+fn normalize_evaluation_bars(mut bars: Vec<OhlcvBar>) -> Vec<OhlcvBar> {
+    bars.sort_by_key(|bar| parse_bar_open_millis(&bar.open_time).unwrap_or(i64::MAX));
+    bars.dedup_by(|left, right| left.open_time == right.open_time);
+    bars
 }
 
 fn build_evaluation(
@@ -1224,11 +1408,7 @@ fn build_evaluation(
         .ok_or_else(|| anyhow!("recommendation entry range is missing for evaluation"))?;
     let direction = normalized_trade_direction(run);
     let exit_bar = match bars.iter().find(|bar| {
-        bar.open_time
-            .parse::<i64>()
-            .ok()
-            .map(|open_time| open_time >= target_ms)
-            .unwrap_or(false)
+        parse_bar_open_millis(&bar.open_time).is_some_and(|open_time| open_time >= target_ms)
     }) {
         Some(bar) => bar,
         None => return Ok(None),
@@ -1236,11 +1416,8 @@ fn build_evaluation(
     let window = bars
         .iter()
         .filter(|bar| {
-            bar.open_time
-                .parse::<i64>()
-                .ok()
-                .map(|open_time| open_time >= generated_at_ms && open_time <= target_ms)
-                .unwrap_or(false)
+            parse_bar_open_millis(&bar.open_time)
+                .is_some_and(|open_time| open_time >= generated_at_ms && open_time <= target_ms)
         })
         .collect::<Vec<_>>();
     let max_favorable_price = favorable_price(direction, &window).unwrap_or(exit_bar.close);
@@ -1495,7 +1672,7 @@ fn evaluate_window(
     }
 
     let exit_price = bars.iter().find_map(|bar| {
-        let open_time = bar.open_time.parse::<i64>().ok()?;
+        let open_time = parse_bar_open_millis(&bar.open_time)?;
         (open_time >= target_ms).then_some(bar.close)
     })?;
 
@@ -1514,6 +1691,37 @@ fn parse_rfc3339_millis(value: &str) -> anyhow::Result<i64> {
     let parsed = OffsetDateTime::parse(value, &Rfc3339)
         .with_context(|| format!("failed to parse generated_at timestamp: {value}"))?;
     Ok((parsed.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+fn parse_bar_open_millis(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    if let Ok(millis) = trimmed.parse::<i64>() {
+        return Some(millis);
+    }
+    if let Ok(parsed) = OffsetDateTime::parse(trimmed, &Rfc3339) {
+        return Some((parsed.unix_timestamp_nanos() / 1_000_000) as i64);
+    }
+
+    let normalized = trimmed.replace('T', " ");
+    let offset = UtcOffset::from_hms(8, 0, 0).ok()?;
+    for pattern in [
+        "[year]-[month]-[day] [hour]:[minute]:[second]",
+        "[year]-[month]-[day] [hour]:[minute]",
+    ] {
+        let format = parse_time_format(pattern).ok()?;
+        if let Ok(parsed) = PrimitiveDateTime::parse(&normalized, &format) {
+            return Some((parsed.assume_offset(offset).unix_timestamp_nanos() / 1_000_000) as i64);
+        }
+    }
+
+    let date_format = parse_time_format("[year]-[month]-[day]").ok()?;
+    Date::parse(&normalized, &date_format).ok().map(|date| {
+        let close_time = Time::from_hms(15, 0, 0).unwrap_or(Time::MIDNIGHT);
+        (PrimitiveDateTime::new(date, close_time)
+            .assume_offset(offset)
+            .unix_timestamp_nanos()
+            / 1_000_000) as i64
+    })
 }
 
 fn current_utc_millis() -> i64 {
@@ -1897,10 +2105,7 @@ fn append_pending_history_row(run: &RecommendationRunDto) -> RecommendationHisto
             .symbol
             .clone()
             .unwrap_or_else(|| "No Recommendation".into()),
-        stock_name: run
-            .stock_name
-            .clone()
-            .unwrap_or_else(|| "未知".into()),
+        stock_name: run.stock_name.clone().unwrap_or_else(|| "未知".into()),
         shortlist: Vec::new(),
         exchange: run
             .exchanges

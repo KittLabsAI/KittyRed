@@ -41,6 +41,14 @@ pub struct RuntimeSettingsDto {
     pub scan_scope: String,
     pub watchlist_symbols: Vec<String>,
     pub daily_max_ai_calls: u32,
+    #[serde(default = "default_use_bid_ask_data")]
+    pub use_bid_ask_data: bool,
+    #[serde(default)]
+    pub use_financial_report_data: bool,
+    #[serde(default = "default_ai_kline_bar_count")]
+    pub ai_kline_bar_count: u32,
+    #[serde(default = "default_ai_kline_frequencies")]
+    pub ai_kline_frequencies: Vec<String>,
     pub pause_after_consecutive_losses: u32,
     pub min_confidence_score: f64,
     pub allowed_markets: String,
@@ -95,6 +103,240 @@ pub struct RuntimeSecretsSyncDto {
     pub persist: bool,
     pub model_api_key: Option<String>,
     pub exchanges: Vec<RuntimeExchangeSecretDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBacktestDatasetRequestDto {
+    pub name: String,
+    pub symbols: Vec<String>,
+    pub start_date: String,
+    pub end_date: String,
+    pub interval_minutes: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestDatasetDto {
+    pub dataset_id: String,
+    pub name: String,
+    pub status: String,
+    pub symbols: Vec<String>,
+    pub start_date: String,
+    pub end_date: String,
+    pub interval_minutes: u32,
+    pub total_snapshots: u32,
+    pub fetched_count: u32,
+    pub estimated_llm_calls: u32,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestFetchFailureDto {
+    pub failure_id: String,
+    pub dataset_id: String,
+    pub symbol: String,
+    pub captured_at: Option<String>,
+    pub timeframe: String,
+    pub stage: String,
+    pub reason: String,
+    pub error_detail: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestFetchProgressDto {
+    pub dataset_id: String,
+    pub status: String,
+    pub total_snapshots: u32,
+    pub fetched_count: u32,
+    pub failure_count: u32,
+    pub error_message: Option<String>,
+    pub recent_failures: Vec<BacktestFetchFailureDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportRowDto {
+    #[serde(alias = "stock_code")]
+    pub stock_code: String,
+    #[serde(alias = "report_date")]
+    pub report_date: Option<String>,
+    #[serde(alias = "stock_name")]
+    pub stock_name: Option<String>,
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportSectionDto {
+    pub section: String,
+    pub label: String,
+    pub source: String,
+    pub rows: Vec<FinancialReportRowDto>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportSnapshotDto {
+    pub stock_code: String,
+    pub sections: Vec<FinancialReportSectionDto>,
+    pub source_revision: String,
+    pub refreshed_at: Option<String>,
+    pub analysis: Option<FinancialReportAnalysisDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportSectionSummaryDto {
+    pub section: String,
+    pub label: String,
+    pub source: String,
+    pub row_count: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportOverviewDto {
+    pub stock_count: u32,
+    pub row_count: u32,
+    pub refreshed_at: Option<String>,
+    pub sections: Vec<FinancialReportSectionSummaryDto>,
+    pub analyses: Vec<FinancialReportAnalysisDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportAnalysisDto {
+    pub stock_code: String,
+    pub source_revision: String,
+    pub key_summary: String,
+    pub positive_factors: String,
+    pub negative_factors: String,
+    pub fraud_risk_points: String,
+    pub model_provider: Option<String>,
+    pub model_name: Option<String>,
+    pub generated_at: String,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportFetchProgressDto {
+    pub stock_code: String,
+    pub status: String,
+    pub completed_sections: u32,
+    pub total_sections: u32,
+    pub message: String,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBacktestRequestDto {
+    pub dataset_id: String,
+    pub name: String,
+    pub max_holding_days: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestRunDto {
+    pub backtest_id: String,
+    pub dataset_id: String,
+    pub name: String,
+    pub status: String,
+    pub model_provider: String,
+    pub model_name: String,
+    pub prompt_version: String,
+    pub max_holding_days: u32,
+    pub total_ai_calls: u32,
+    pub processed_ai_calls: u32,
+    pub total_timepoints: u32,
+    pub processed_timepoints: u32,
+    pub total_signals: u32,
+    pub trade_signals: u32,
+    pub open_trades: u32,
+    pub win_count: u32,
+    pub loss_count: u32,
+    pub flat_count: u32,
+    pub total_pnl_cny: f64,
+    pub total_pnl_percent: f64,
+    pub max_drawdown_percent: f64,
+    pub profit_factor: Option<f64>,
+    pub error_message: Option<String>,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestSignalDto {
+    pub signal_id: String,
+    pub backtest_id: String,
+    pub symbol: String,
+    pub stock_name: Option<String>,
+    pub captured_at: String,
+    pub has_trade: bool,
+    pub direction: Option<String>,
+    pub confidence_score: Option<f64>,
+    pub risk_status: Option<String>,
+    pub entry_low: Option<f64>,
+    pub entry_high: Option<f64>,
+    pub stop_loss: Option<f64>,
+    pub take_profit: Option<String>,
+    pub amount_cny: Option<f64>,
+    pub max_loss_cny: Option<f64>,
+    pub rationale: Option<String>,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestTradeDto {
+    pub trade_id: String,
+    pub backtest_id: String,
+    pub signal_id: Option<String>,
+    pub symbol: String,
+    pub stock_name: Option<String>,
+    pub direction: String,
+    pub entry_price: f64,
+    pub entry_at: String,
+    pub exit_price: f64,
+    pub exit_at: String,
+    pub exit_reason: String,
+    pub stop_loss: Option<f64>,
+    pub take_profit: Option<f64>,
+    pub amount_cny: Option<f64>,
+    pub holding_periods: u32,
+    pub pnl_cny: f64,
+    pub pnl_percent: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestEquityPointDto {
+    pub captured_at: String,
+    pub cumulative_pnl_percent: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacktestSummaryDto {
+    pub backtest_id: String,
+    pub total_signals: u32,
+    pub trade_count: u32,
+    pub win_rate: f64,
+    pub total_pnl_cny: f64,
+    pub total_pnl_percent: f64,
+    pub max_drawdown_percent: f64,
+    pub profit_factor: Option<f64>,
+    pub equity_curve: Vec<BacktestEquityPointDto>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -442,9 +684,12 @@ pub struct RiskDecisionDto {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PositionDto {
+    pub position_id: String,
+    pub account_id: String,
     pub exchange: String,
     pub symbol: String,
     pub side: String,
+    pub quantity: f64,
     pub size: String,
     pub entry_price: f64,
     pub mark_price: f64,
@@ -721,4 +966,16 @@ fn default_signal_cooldown_minutes() -> u32 {
 
 fn default_signal_daily_max() -> u32 {
     50
+}
+
+fn default_use_bid_ask_data() -> bool {
+    true
+}
+
+fn default_ai_kline_bar_count() -> u32 {
+    60
+}
+
+pub fn default_ai_kline_frequencies() -> Vec<String> {
+    vec!["5m".into(), "1h".into(), "1d".into(), "1w".into()]
 }

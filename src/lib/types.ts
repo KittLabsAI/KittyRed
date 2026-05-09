@@ -209,9 +209,12 @@ export interface PortfolioOverview {
 }
 
 export interface PositionRow {
+  positionId: string;
+  accountId: string;
   exchange: string;
   symbol: string;
   side: "Long" | "Short" | "Holding";
+  quantity: number;
   size: string;
   entry: number;
   mark: number;
@@ -334,6 +337,184 @@ export interface RecommendationAudit {
   riskResult: string;
   marketSnapshot: string;
   accountSnapshot: string;
+}
+
+export interface BacktestDataset {
+  datasetId: string;
+  name: string;
+  status: string;
+  symbols: string[];
+  startDate: string;
+  endDate: string;
+  intervalMinutes: number;
+  totalSnapshots: number;
+  fetchedCount: number;
+  estimatedLlmCalls: number;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface BacktestFetchFailure {
+  failureId: string;
+  datasetId: string;
+  symbol: string;
+  capturedAt?: string;
+  timeframe: string;
+  stage: string;
+  reason: string;
+  errorDetail?: string;
+  createdAt: string;
+}
+
+export interface BacktestFetchProgress {
+  datasetId: string;
+  status: string;
+  totalSnapshots: number;
+  fetchedCount: number;
+  failureCount: number;
+  errorMessage?: string;
+  recentFailures: BacktestFetchFailure[];
+}
+
+export interface FinancialReportRow {
+  stockCode: string;
+  reportDate?: string | null;
+  stockName?: string | null;
+  raw: Record<string, unknown>;
+}
+
+export interface FinancialReportSection {
+  section: string;
+  label: string;
+  source: string;
+  rows: FinancialReportRow[];
+  error?: string | null;
+}
+
+export interface FinancialReportAnalysis {
+  stockCode: string;
+  sourceRevision: string;
+  keySummary: string;
+  positiveFactors: string;
+  negativeFactors: string;
+  fraudRiskPoints: string;
+  modelProvider?: string | null;
+  modelName?: string | null;
+  generatedAt: string;
+  stale: boolean;
+}
+
+export interface FinancialReportSnapshot {
+  stockCode: string;
+  sections: FinancialReportSection[];
+  sourceRevision: string;
+  refreshedAt?: string | null;
+  analysis?: FinancialReportAnalysis | null;
+}
+
+export interface FinancialReportSectionSummary {
+  section: string;
+  label: string;
+  source: string;
+  rowCount: number;
+}
+
+export interface FinancialReportOverview {
+  stockCount: number;
+  rowCount: number;
+  refreshedAt?: string | null;
+  sections: FinancialReportSectionSummary[];
+  analyses: FinancialReportAnalysis[];
+}
+
+export interface FinancialReportFetchProgress {
+  stockCode: string;
+  status: string;
+  completedSections: number;
+  totalSections: number;
+  message: string;
+  errorMessage?: string | null;
+}
+
+export interface BacktestRun {
+  backtestId: string;
+  datasetId: string;
+  name: string;
+  status: string;
+  modelProvider: string;
+  modelName: string;
+  promptVersion: string;
+  maxHoldingDays: number;
+  totalAiCalls: number;
+  processedAiCalls: number;
+  totalTimepoints: number;
+  processedTimepoints: number;
+  totalSignals: number;
+  tradeSignals: number;
+  openTrades: number;
+  winCount: number;
+  lossCount: number;
+  flatCount: number;
+  totalPnlCny: number;
+  totalPnlPercent: number;
+  maxDrawdownPercent: number;
+  profitFactor?: number;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface BacktestSignal {
+  signalId: string;
+  backtestId: string;
+  symbol: string;
+  stockName?: string;
+  capturedAt: string;
+  hasTrade: boolean;
+  direction?: string;
+  confidenceScore?: number;
+  riskStatus?: string;
+  entryLow?: number;
+  entryHigh?: number;
+  stopLoss?: number;
+  takeProfit?: string;
+  amountCny?: number;
+  maxLossCny?: number;
+  rationale?: string;
+  result: string;
+}
+
+export interface BacktestTrade {
+  tradeId: string;
+  backtestId: string;
+  signalId?: string;
+  symbol: string;
+  stockName?: string;
+  direction: string;
+  entryPrice: number;
+  entryAt: string;
+  exitPrice: number;
+  exitAt: string;
+  exitReason: string;
+  stopLoss?: number;
+  takeProfit?: number;
+  amountCny?: number;
+  holdingPeriods: number;
+  pnlCny: number;
+  pnlPercent: number;
+}
+
+export interface BacktestSummary {
+  backtestId: string;
+  totalSignals: number;
+  tradeCount: number;
+  winRate: number;
+  totalPnlCny: number;
+  totalPnlPercent: number;
+  maxDrawdownPercent: number;
+  profitFactor?: number;
+  equityCurve: Array<{ capturedAt: string; cumulativePnlPercent: number }>;
 }
 
 export interface PaperOrderDraft {

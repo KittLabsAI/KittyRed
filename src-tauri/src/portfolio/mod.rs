@@ -52,9 +52,12 @@ mod tests {
         let positions = combine_positions(
             "dual",
             vec![PositionDto {
+                position_id: "paper-position-1".into(),
+                account_id: "paper-cash".into(),
                 exchange: "akshare".into(),
                 symbol: "BTC/USDT".into(),
                 side: "Long".into(),
+                quantity: 0.1,
                 size: "0.100 BTC".into(),
                 entry_price: 68_000.0,
                 mark_price: 68_400.0,
@@ -62,9 +65,12 @@ mod tests {
                 leverage: "3x".into(),
             }],
             vec![PositionDto {
+                position_id: "real-position-1".into(),
+                account_id: "real-read-only".into(),
                 exchange: "沪市A股".into(),
                 symbol: "ETH/USDT".into(),
                 side: "Spot".into(),
+                quantity: 1.5,
                 size: "1.500 ETH".into(),
                 entry_price: 3_200.0,
                 mark_price: 3_260.0,
