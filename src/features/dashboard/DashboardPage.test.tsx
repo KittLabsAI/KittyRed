@@ -49,8 +49,8 @@ describe("DashboardPage", () => {
     expect(screen.getByText("¥82,400")).toBeInTheDocument();
     expect(screen.getByText("+¥2,400")).toBeInTheDocument();
     expect(screen.getByText("+¥800 / +0.08%")).toBeInTheDocument();
-    expect(container.querySelector(".dashboard-workbench-ledger")).toBeInTheDocument();
-    expect(container.querySelectorAll(".dashboard-workbench-ledger__item")).toHaveLength(4);
+    expect(container.querySelectorAll("dl")).toHaveLength(4);
+    expect(screen.getByRole("button", { name: "AI 分析" })).toBeInTheDocument();
     expect(screen.queryByText("行情来源")).not.toBeInTheDocument();
     expect(screen.queryByText("账户模式")).not.toBeInTheDocument();
     expect(screen.queryByText("最新建议")).not.toBeInTheDocument();

@@ -57,6 +57,7 @@ mod tests {
         assert!(tables.contains(&"backtest_runs".to_string()));
         assert!(tables.contains(&"backtest_signals".to_string()));
         assert!(tables.contains(&"backtest_trades".to_string()));
+        assert!(tables.contains(&"backtest_equity_curve".to_string()));
     }
 
     #[test]
@@ -118,6 +119,8 @@ impl Database {
             .execute_batch(include_str!("migrations/0011_backtest.sql"))?;
         self.connection
             .execute_batch(include_str!("migrations/0012_financial_reports.sql"))?;
+        self.connection
+            .execute_batch(include_str!("migrations/0013_backtest_equity_curve.sql"))?;
         self.run_market_cache_arbitrage_migration()?;
         self.run_market_cache_base_asset_migration()?;
         self.run_backtest_progress_migration()?;

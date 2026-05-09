@@ -82,12 +82,12 @@ describe("SettingsPage", () => {
     const panel = screen.getByRole("tabpanel");
     expect(within(panel).queryByText("自选股票")).not.toBeInTheDocument();
     expect(within(panel).getByText("AI分析")).toBeInTheDocument();
-    expect(within(panel).getByText("使用买卖盘数据")).toBeInTheDocument();
-    expect(within(panel).getByText("使用财报数据")).toBeInTheDocument();
-    expect(within(panel).getByLabelText("使用买卖盘数据").closest("label")).toHaveClass("settings-ai-toggle-field");
-    expect(within(panel).getByLabelText("使用财报数据").closest("label")).toHaveClass("settings-ai-toggle-field");
+    expect(within(panel).getAllByText("使用买卖盘数据")).toHaveLength(2);
+    expect(within(panel).getAllByText("使用财报数据")).toHaveLength(2);
+    expect(within(panel).getByLabelText("使用买卖盘数据").closest(".settings-ai-toggle-box")).toBeInTheDocument();
+    expect(within(panel).getByLabelText("使用财报数据").closest(".settings-ai-toggle-box")).toBeInTheDocument();
     expect(within(panel).getByLabelText("K线根数")).toHaveValue(60);
-    expect(within(panel).getByLabelText("K线根数").closest("label")).toHaveClass("settings-ai-number-field");
+    expect(within(panel).getByLabelText("K线根数").closest(".settings-ai-row--inputs")).toBeInTheDocument();
     expect(within(panel).getByLabelText("K线级别")).toBeInTheDocument();
     expect(within(panel).getByLabelText("K线级别").closest(".settings-ai-row--levels")).toBeInTheDocument();
     expect(within(panel).getByText("风险")).toBeInTheDocument();

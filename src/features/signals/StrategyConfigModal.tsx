@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import { Label } from "../../components/ui/label";
 import type { StrategyMeta, StrategyConfig } from "../../lib/types";
 
 interface StrategyConfigModalProps {
@@ -48,7 +51,7 @@ export function StrategyConfigModal({
     <div className="modal-overlay" onClick={onClose}>
       <div
         ref={dialogRef}
-        className="modal-content strategy-config-modal"
+        className="modal-content strategy-config-modal border border-white/10 bg-[color:var(--panel-strong)] shadow-[var(--shadow-workbench)]"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
         role="dialog"
@@ -61,9 +64,9 @@ export function StrategyConfigModal({
             <h3>{meta.name}</h3>
             <p className="panel__meta">{meta.description}</p>
           </div>
-          <button aria-label="关闭配置" className="ghost-button" onClick={onClose} type="button">
+          <Button aria-label="关闭配置" onClick={onClose} size="sm" variant="ghost">
             ✕
-          </button>
+          </Button>
         </div>
 
         <div className="modal-body">
@@ -84,12 +87,12 @@ export function StrategyConfigModal({
           <div className="strategy-config__params">
             {Object.entries(params).map(([key, value]) => (
               <div key={key} className="strategy-config__param">
-                <label htmlFor={`param-${key}`}>
+                <Label htmlFor={`param-${key}`}>
                   {strategyParamLabel(key)}
-                </label>
-                <input
+                </Label>
+                <Input
                   id={`param-${key}`}
-                  className="search-shell"
+                  className="h-11"
                   type="number"
                   step="any"
                   value={value}
@@ -106,12 +109,12 @@ export function StrategyConfigModal({
         </div>
 
         <div className="modal-footer">
-          <button className="ghost-button" onClick={handleReset} type="button">
+          <Button onClick={handleReset} variant="ghost">
             恢复默认
-          </button>
-          <button className="primary-button" onClick={handleSave} type="button">
+          </Button>
+          <Button onClick={handleSave}>
             保存
-          </button>
+          </Button>
         </div>
       </div>
     </div>

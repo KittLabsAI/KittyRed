@@ -131,6 +131,8 @@ describe("FinancialReportsPage", () => {
 
     expect(await screen.findByText("业绩报表")).toBeInTheDocument();
     expect(screen.getByText("利润表")).toBeInTheDocument();
+    expect(screen.queryByText("来源")).not.toBeInTheDocument();
+    expect(screen.queryByText("akshare:stock_yjbb_em")).not.toBeInTheDocument();
     expect(screen.getByText("财报行数")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.getByText("关键信息总结")).toBeInTheDocument();

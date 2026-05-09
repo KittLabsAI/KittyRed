@@ -219,9 +219,9 @@ mod tests {
             leverage: 1.0,
             stop_loss: None,
             take_profit: None,
-            updated_at: "2026-05-07T10:30:00+08:00".into(),
+            updated_at: "2026-05-08T10:30:00+08:00".into(),
         }))
-        .expect("sell order should close the position");
+        .expect("sell order should close the position on T+1");
 
         assert_eq!(sell.side, "sell");
         assert!(service.list_positions_snapshot().is_empty());
@@ -234,6 +234,45 @@ mod tests {
         assert_eq!(orders[0].status, "Filled");
         assert_eq!(orders[0].realized_pnl_usdt, Some(100.0));
         assert_eq!(orders[1].status, "Closed Manual Sell");
+    }
+
+    #[test]
+    fn same_day_sell_is_blocked_by_t_plus_1_rule() {
+        let service = PaperService::default();
+
+        futures::executor::block_on(service.create_paper_order(PaperOrderInput {
+            account_id: "paper-cash".into(),
+            symbol: "SHSE.600000".into(),
+            market_type: "ashare".into(),
+            side: "buy".into(),
+            quantity: 100.0,
+            entry_price: 8.0,
+            leverage: 1.0,
+            stop_loss: None,
+            take_profit: None,
+            updated_at: "2026-05-07T10:00:00+08:00".into(),
+        }))
+        .expect("buy order should open a position");
+
+        let result = futures::executor::block_on(service.create_paper_order(PaperOrderInput {
+            account_id: "paper-cash".into(),
+            symbol: "SHSE.600000".into(),
+            market_type: "ashare".into(),
+            side: "sell".into(),
+            quantity: 100.0,
+            entry_price: 9.0,
+            leverage: 1.0,
+            stop_loss: None,
+            take_profit: None,
+            updated_at: "2026-05-07T14:00:00+08:00".into(),
+        }));
+
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("T+1"),
+            "error should mention T+1 rule"
+        );
+        assert_eq!(service.list_positions_snapshot().len(), 1);
     }
 
     #[test]
@@ -265,9 +304,9 @@ mod tests {
         }
 
         let close = futures::executor::block_on(
-            service.close_position("PO-0001", "2026-05-07T10:30:00+08:00".into()),
+            service.close_position("PO-0001", "2026-05-08T10:30:00+08:00".into()),
         )
-        .expect("legacy observation position should close");
+        .expect("legacy observation position should close on T+1");
 
         assert_eq!(close.side, "sell");
         assert!(service.list_positions_snapshot().is_empty());
@@ -755,6 +794,9 @@ impl PaperService {
             .iter()
             .position(|position| position.entry_order_id == position_id)
             .ok_or_else(|| anyhow!("模拟持仓不存在或已清仓"))?;
+        if same_trading_day(&state.positions[index].updated_at, &updated_at) {
+            bail!("A 股 T+1 规则：当日买入的股票当日不能卖出，最早 T+1 日可卖");
+        }
         let quantity = state.positions[index].quantity;
         let exit_price = state.positions[index].mark_price;
         let draft = close_position_at_index(&mut state, index, quantity, exit_price, &updated_at)?;
@@ -780,6 +822,9 @@ impl PaperService {
                     && position.side.eq_ignore_ascii_case("Long")
             })
             .ok_or_else(|| anyhow!("没有可卖出的模拟持仓：{}", input.symbol))?;
+        if same_trading_day(&state.positions[index].updated_at, &input.updated_at) {
+            bail!("A 股 T+1 规则：当日买入的股票当日不能卖出，最早 T+1 日可卖");
+        }
         let draft = close_position_at_index(
             &mut state,
             index,
@@ -1325,6 +1370,17 @@ fn order_type(market_type: &str, direction: &str) -> String {
         ("perpetual", _) => "Perpetual Long".into(),
         _ => "Paper Entry".into(),
     }
+}
+
+fn same_trading_day(a: &str, b: &str) -> bool {
+    trading_day_date(a) == trading_day_date(b)
+}
+
+fn trading_day_date(timestamp: &str) -> &str {
+    if timestamp.starts_with("epoch:") {
+        return "";
+    }
+    timestamp.get(0..10).unwrap_or("")
 }
 
 fn current_timestamp_marker() -> String {

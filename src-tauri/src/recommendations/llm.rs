@@ -248,10 +248,6 @@ mod tests {
             positive_factors: "经营现金流改善".into(),
             negative_factors: "费用率上升".into(),
             fraud_risk_points: "暂无明显异常".into(),
-            raw_sections: vec![serde_json::json!({
-                "section": "income_statement",
-                "rows": [{"reportDate": "2025-12-31", "raw": {"净利润": 12.3}}]
-            })],
         });
         let mut rows = sample_rows();
         let row = rows.remove(0);
@@ -266,9 +262,8 @@ mod tests {
             financial.get("key_summary").and_then(serde_json::Value::as_str),
             Some("收入稳定增长")
         );
-        assert!(financial.get("raw_sections").is_some());
         assert!(prompt.contains("fraud_risk_points"));
-        assert!(prompt.contains("净利润"));
+        assert!(!prompt.contains("raw_sections"));
     }
 
     #[test]
@@ -281,7 +276,6 @@ mod tests {
             positive_factors: "经营现金流改善".into(),
             negative_factors: "费用率上升".into(),
             fraud_risk_points: "暂无明显异常".into(),
-            raw_sections: vec![serde_json::json!({"section": "income_statement"})],
         });
         let mut rows = sample_rows();
         let row = rows.remove(0);
@@ -726,7 +720,6 @@ pub struct FinancialAnalysisPromptContext {
     pub positive_factors: String,
     pub negative_factors: String,
     pub fraud_risk_points: String,
-    pub raw_sections: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]

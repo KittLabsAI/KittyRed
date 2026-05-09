@@ -1,7 +1,9 @@
 import { CircleStop, RefreshCw, Send, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Button } from "../../components/ui/button";
 import {
   contextShareLabel,
   emptyAssistantContext,
@@ -24,6 +26,32 @@ type AssistantDrawerProps = {
 };
 
 const sessionStorageKey = "kittyred:assistant-session";
+
+const markdownComponents: Components = {
+  p: ({ node: _node, ...props }) => <p className="leading-7 text-foreground" {...props} />,
+  ul: ({ node: _node, ...props }) => <ul className="list-disc space-y-2 pl-5 text-foreground" {...props} />,
+  ol: ({ node: _node, ...props }) => <ol className="list-decimal space-y-2 pl-5 text-foreground" {...props} />,
+  li: ({ node: _node, ...props }) => <li className="leading-7" {...props} />,
+  strong: ({ node: _node, ...props }) => <strong className="font-semibold text-foreground" {...props} />,
+  code: ({ node: _node, className, children, ...props }) => {
+    const isBlock = Boolean(className);
+    if (isBlock) {
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className="rounded-md bg-white/10 px-1.5 py-0.5 text-[0.92em] text-foreground" {...props}>
+        {children}
+      </code>
+    );
+  },
+  blockquote: ({ node: _node, ...props }) => (
+    <blockquote className="border-l border-white/12 pl-4 text-muted-foreground" {...props} />
+  ),
+};
 
 export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
   const assistantDraft = useRecommendationStore((state) => state.assistantDraft);
@@ -365,39 +393,41 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
     <section
       aria-modal="true"
       aria-label="AI 助手抽屉"
-      className="assistant-drawer"
+      className="assistant-drawer border-l border-border bg-[color:var(--panel-strong)] shadow-[-14px_0_42px_rgba(0,0,0,0.26)]"
       role="dialog"
     >
-      <header className="assistant-drawer__header">
+      <header className="assistant-drawer__header border-b border-border">
         <div>
           <span className="assistant-drawer__eyebrow">AI 助手</span>
-          <strong>KittyRed 助手</strong>
+          <strong className="text-base font-semibold text-foreground">KittyRed 助手</strong>
         </div>
         <div className="assistant-drawer__header-actions">
-          <button
+          <Button
             aria-label="刷新助手"
             className="assistant-round-button"
             onClick={() => void refreshSession()}
-            type="button"
+            size="icon"
+            variant="ghost"
           >
             <RefreshCw size={16} />
-          </button>
-          <button
+          </Button>
+          <Button
             aria-label="关闭助手"
             className="assistant-round-button"
             onClick={onClose}
-            type="button"
+            size="icon"
+            variant="ghost"
           >
             <X size={16} />
-          </button>
+          </Button>
         </div>
       </header>
 
       <div className="assistant-drawer__body">
-        <div className="assistant-message-list">
+        <div className="assistant-message-list pr-1">
           {messages.length === 0 ? (
-            <div className="assistant-empty">
-              <strong>可以查询行情、持仓、建议和模拟委托。</strong>
+            <div className="assistant-empty rounded-2xl border border-white/8 bg-gradient-to-b from-white/4 to-sky-200/8">
+              <strong className="text-sm font-semibold text-foreground">可以查询行情、持仓、建议和模拟委托。</strong>
               <span>输入股票代码或投资问题，助手会用中文解释风险和下一步。</span>
             </div>
           ) : (
@@ -419,18 +449,19 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
           )}
         </div>
         {error ? (
-          <div aria-live="polite" className="assistant-error-banner" role="alert">
+          <div aria-live="polite" className="assistant-error-banner rounded-2xl border px-4 py-3" role="alert">
             {error}
           </div>
         ) : null}
       </div>
 
-      <footer className="assistant-composer">
+      <footer className="assistant-composer border-t border-border bg-[rgba(5,9,15,0.92)]">
         <label className="sr-only" htmlFor="assistant-message">
           助手消息
         </label>
         <textarea
           aria-label="助手消息"
+          className="min-h-[116px] w-full resize-y rounded-2xl border border-border bg-input px-4 py-3 text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           id="assistant-message"
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
@@ -457,15 +488,15 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
           </div>
           <div className="assistant-send-cluster">
             <ContextRing context={context} percent={contextPercent} />
-            <button
+            <Button
               aria-label={running ? "停止" : "发送"}
               className="assistant-round-button assistant-send-button"
               disabled={!running && input.trim().length === 0}
               onClick={() => (running ? void stopCurrentRun() : void submitMessage())}
-              type="button"
+              size="icon"
             >
               {running ? <CircleStop size={18} /> : <Send size={18} />}
-            </button>
+            </Button>
           </div>
         </div>
       </footer>
@@ -481,14 +512,20 @@ function AssistantMessageView({
   onToggle: () => void;
 }) {
   if (message.role === "user") {
-    return <article className="assistant-message assistant-message--user">{message.content}</article>;
+    return (
+      <article className="assistant-message assistant-message--user rounded-2xl border bg-white/[0.03] px-4 py-3">
+        <div className="assistant-message__meta mb-2">你</div>
+        <div className="text-sm leading-6 text-foreground">{message.content}</div>
+      </article>
+    );
   }
 
   if (message.role === "assistant") {
     return (
-      <article className="assistant-message assistant-message--assistant">
+      <article className="assistant-message assistant-message--assistant rounded-2xl border px-4 py-3">
+        <div className="assistant-message__meta mb-2">助手</div>
         <div className="assistant-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
             {message.content ?? ""}
           </ReactMarkdown>
         </div>
@@ -498,24 +535,21 @@ function AssistantMessageView({
 
   if (message.role === "thinking" || message.role === "tool") {
     const title = message.role === "thinking" ? "思考" : message.name || "工具";
-    const preview = summarizeFoldMessage(message);
-
     return (
-      <article className={`assistant-fold-card assistant-fold-card--${message.role}`}>
-        <button
+      <article className={`assistant-fold-card assistant-fold-card--${message.role} rounded-2xl border bg-white/[0.03]`}>
+        <Button
           aria-expanded={message.expanded ? "true" : "false"}
           className="assistant-fold-card__button"
           onClick={onToggle}
-          type="button"
+          variant="ghost"
         >
           <div className="assistant-fold-card__title">
             {message.role === "tool" ? <Wrench size={14} /> : null}
             <strong>{title}</strong>
           </div>
-          <span className="assistant-fold-card__summary">{preview}</span>
-        </button>
+        </Button>
         {message.expanded ? (
-          <pre className="assistant-fold-card__content">
+          <pre className="assistant-fold-card__content border-t border-white/8 pt-4">
             {message.role === "tool"
               ? [message.argumentsText, message.output || message.resultPreview]
                   .filter(Boolean)
@@ -527,7 +561,7 @@ function AssistantMessageView({
     );
   }
 
-  return <article className="assistant-message assistant-message--error">{message.content}</article>;
+  return <article className="assistant-message assistant-message--error rounded-2xl border px-4 py-3">{message.content}</article>;
 }
 
 function ContextRing({
@@ -600,24 +634,4 @@ function createSessionId() {
     return crypto.randomUUID();
   }
   return `assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function summarizeFoldMessage(message: AssistantUiMessage) {
-  const source =
-    message.role === "thinking"
-      ? message.content || message.status || "思考中..."
-      : message.resultPreview ||
-        message.summary ||
-        message.output ||
-        message.status ||
-        "工具运行中...";
-  return truncateSingleLine(source, 80);
-}
-
-function truncateSingleLine(value: string, maxLength: number) {
-  const singleLine = value.replace(/\s+/g, " ").trim();
-  if (singleLine.length <= maxLength) {
-    return singleLine;
-  }
-  return `${singleLine.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }

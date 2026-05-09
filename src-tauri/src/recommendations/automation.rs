@@ -1291,11 +1291,6 @@ fn financial_analysis_contexts(
                     positive_factors: analysis.positive_factors,
                     negative_factors: analysis.negative_factors,
                     fraud_risk_points: analysis.fraud_risk_points,
-                    raw_sections: snapshot
-                        .sections
-                        .into_iter()
-                        .map(|section| serde_json::json!(section))
-                        .collect(),
                 },
             ))
         })

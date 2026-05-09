@@ -1,3 +1,4 @@
+import { Badge } from "../../components/ui/badge";
 import type { StrategyMeta, StrategyConfig, StrategyStats } from "../../lib/types";
 
 interface StrategyCardProps {
@@ -27,16 +28,16 @@ export function StrategyCard({ meta, config, stats, onClick }: StrategyCardProps
 
   return (
     <button
-      className={`strategy-card${!enabled ? " strategy-card--disabled" : ""}`}
+      className={`strategy-card rounded-xl border border-border bg-card/80 p-4 text-left text-card-foreground shadow-[var(--shadow-workbench)] transition hover:border-[color:var(--accent)] hover:bg-card${!enabled ? " strategy-card--disabled" : ""}`}
       onClick={onClick}
       type="button"
     >
       <div className="strategy-card__header">
         <div>
           <div className="strategy-card__name">{meta.name}</div>
-          <span className={`badge ${categoryClass}`}>
+          <Badge className={`badge ${categoryClass}`}>
             {categoryLabels[meta.category] ?? meta.category}
-          </span>
+          </Badge>
         </div>
         <span
           className={`strategy-card__dot${enabled ? " strategy-card__dot--on" : ""}`}
@@ -56,7 +57,7 @@ export function StrategyCard({ meta, config, stats, onClick }: StrategyCardProps
           <span>{avgScore.toFixed(1)}</span>
         </div>
       </div>
-      <div className="strategy-card__footer">
+      <div className="strategy-card__footer gap-3">
         <span>{marketLabels(meta.applicableMarkets).join(" · ")}</span>
         {lastGen ? (
           <span>最近：{new Date(lastGen).toLocaleTimeString()}</span>

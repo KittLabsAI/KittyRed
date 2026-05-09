@@ -43,15 +43,15 @@ export function Header() {
     : "AI 扫描关闭";
 
   return (
-    <header className="app-header">
+    <header className="app-header flex flex-col items-start justify-between gap-5 border-b border-border pb-5 lg:flex-row">
       <div>
-        <span className="section-label">A股模拟投资工作台</span>
-        <h1>{title}</h1>
+        <span className="section-label text-xs font-semibold uppercase tracking-[0.1em] text-accent">A股模拟投资工作台</span>
+        <h1 className="mt-2 text-[clamp(1.8rem,3vw,2.4rem)] font-semibold tracking-tight">{title}</h1>
       </div>
-      <div className="app-header__meta">
-        <span>{modeLabels[accountMode]}</span>
-        <span>{syncedLabel}</span>
-        <span>{cadenceLabel}</span>
+      <div className="app-header__meta flex flex-wrap justify-end gap-2">
+        <span className="rounded-full border border-border bg-white/4 px-3 py-2 text-[0.74rem] uppercase tracking-[0.1em] text-muted-foreground">{modeLabels[accountMode]}</span>
+        <span className="rounded-full border border-border bg-white/4 px-3 py-2 text-[0.74rem] uppercase tracking-[0.1em] text-muted-foreground">{syncedLabel}</span>
+        <span className="rounded-full border border-border bg-white/4 px-3 py-2 text-[0.74rem] uppercase tracking-[0.1em] text-muted-foreground">{cadenceLabel}</span>
       </div>
     </header>
   );

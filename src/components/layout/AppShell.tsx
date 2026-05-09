@@ -10,9 +10,9 @@ export function AppShell() {
 
   return (
     <>
-      <div className="app-shell">
+      <div className="app-shell min-h-screen bg-background text-foreground">
         <Sidebar />
-        <main className="content">
+        <main className="content min-h-screen">
           <Header />
           <Outlet />
         </main>

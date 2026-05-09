@@ -13,6 +13,11 @@ import {
 } from "../../lib/settings";
 import { getAkshareCurrentQuote } from "../../lib/akshare";
 import { useAppStore } from "../../store/appStore";
+import { Button } from "../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
+import { Input } from "../../components/ui/input";
+import { Select } from "../../components/ui/select";
+import { Textarea } from "../../components/ui/textarea";
 
 type SettingsTab = {
   id: string;
@@ -183,61 +188,47 @@ export function SettingsPage() {
 
   return (
     <section className="page">
-      <div className="page__header">
-        <div>
-          <p className="eyebrow">设置</p>
-          <h1>应用设置</h1>
-          <p className="page__intro">
-            配置 AKShare、模型和本地模拟账户。行情、信号和 AI 推荐只处理自选股。
-          </p>
-        </div>
-      </div>
-
       <div className="settings-layout">
         <aside className="settings-tabs" role="tablist" aria-label="设置分类">
           {tabs.map((tab) => (
-            <button
+            <Button
               aria-selected={activeTab === tab.id}
-              className={
-                activeTab === tab.id
-                  ? "ghost-button settings-tab settings-tab--active"
-                  : "ghost-button settings-tab"
-              }
+              className={activeTab === tab.id ? "settings-tab settings-tab--active justify-start" : "settings-tab justify-start"}
+              variant={activeTab === tab.id ? "default" : "outline"}
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               role="tab"
               type="button"
             >
               {tab.label}
-            </button>
+            </Button>
           ))}
         </aside>
 
-        <section className="panel settings-panel" role="tabpanel">
-          <div className="panel__header">
-            <div className="panel__header-copy">
-              <h2>{currentTab.label}</h2>
-              <p className="settings-copy">{currentTab.blurb}</p>
+        <Card className="panel settings-panel" role="tabpanel">
+          <CardHeader className="items-start px-6 pb-4 pt-6 text-left">
+            <div className="w-full text-left">
+              <CardTitle className="text-[1.7rem]">{currentTab.label}</CardTitle>
+              <p className="settings-copy text-left text-sm text-muted-foreground">{currentTab.blurb}</p>
             </div>
-          </div>
-
+          </CardHeader>
+          <CardContent className="grid gap-6 px-6 pb-6 pt-0">
           {activeTab === "akshare" ? (
             <div className="form-grid">
               <Field label="行情市场">
-                <input readOnly value="沪深 A 股（SHSE / SZSE）" />
+                <Input readOnly value="沪深 A 股（SHSE / SZSE）" />
               </Field>
               <Field label="数据接口">
-                <input readOnly value="AKShare Python SDK" />
+                <Input readOnly value="AKShare Python SDK" />
               </Field>
               <Field label="连接测试">
-                <button
-                  className="ghost-button"
+                <Button
                   disabled={isTestingAkshare}
                   onClick={() => void handleTestAkshareConnection()}
                   type="button"
                 >
                   {isTestingAkshare ? "测试中..." : "测试 AKShare 连接"}
-                </button>
+                </Button>
               </Field>
             </div>
           ) : null}
@@ -246,7 +237,7 @@ export function SettingsPage() {
             <>
               <div className="form-grid settings-model-grid">
                 <Field label="模型服务商">
-                  <select
+                  <Select
                     aria-label="模型服务商"
                     className="settings-select"
                     onChange={(event) => {
@@ -271,10 +262,10 @@ export function SettingsPage() {
                         {option.provider}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </Field>
                 <Field label="接口类型">
-                  <select
+                  <Select
                     aria-label="接口类型"
                     className="settings-select"
                     onChange={(event) =>
@@ -290,36 +281,35 @@ export function SettingsPage() {
                         {option.label}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </Field>
                 <Field label="模型名称">
-                  <input aria-label="模型名称" value={form.modelName} onChange={(event) => setForm((current) => ({ ...current, modelName: event.target.value }))} />
+                  <Input aria-label="模型名称" value={form.modelName} onChange={(event) => setForm((current) => ({ ...current, modelName: event.target.value }))} />
                 </Field>
                 <Field label="接口地址">
-                  <input aria-label="接口地址" value={form.modelBaseUrl} onChange={(event) => setForm((current) => ({ ...current, modelBaseUrl: event.target.value }))} />
+                  <Input aria-label="接口地址" value={form.modelBaseUrl} onChange={(event) => setForm((current) => ({ ...current, modelBaseUrl: event.target.value }))} />
                 </Field>
                 <Field label="模型 API Key">
-                  <input aria-label="模型 API Key" type="password" value={form.modelApiKey} onChange={(event) => setForm((current) => ({ ...current, modelApiKey: event.target.value }))} />
+                  <Input aria-label="模型 API Key" type="password" value={form.modelApiKey} onChange={(event) => setForm((current) => ({ ...current, modelApiKey: event.target.value }))} />
                 </Field>
                 <Field label="温度">
-                  <input aria-label="温度" max={2} min={0} step="0.1" type="number" value={form.modelTemperature} onChange={(event) => setForm((current) => ({ ...current, modelTemperature: Number(event.target.value || 0) }))} />
+                  <Input aria-label="温度" max={2} min={0} step="0.1" type="number" value={form.modelTemperature} onChange={(event) => setForm((current) => ({ ...current, modelTemperature: Number(event.target.value || 0) }))} />
                 </Field>
                 <Field label="最大输出 Token">
-                  <input aria-label="最大输出 Token" min={1} step="1" type="number" value={form.modelMaxTokens} onChange={(event) => setForm((current) => ({ ...current, modelMaxTokens: Number(event.target.value || 1) }))} />
+                  <Input aria-label="最大输出 Token" min={1} step="1" type="number" value={form.modelMaxTokens} onChange={(event) => setForm((current) => ({ ...current, modelMaxTokens: Number(event.target.value || 1) }))} />
                 </Field>
                 <Field label="最大上下文 Token">
-                  <input aria-label="最大上下文 Token" min={1024} step="1024" type="number" value={form.modelMaxContext} onChange={(event) => setForm((current) => ({ ...current, modelMaxContext: Number(event.target.value || 1024) }))} />
+                  <Input aria-label="最大上下文 Token" min={1024} step="1024" type="number" value={form.modelMaxContext} onChange={(event) => setForm((current) => ({ ...current, modelMaxContext: Number(event.target.value || 1024) }))} />
                 </Field>
               </div>
               <div className="hero-panel__actions">
-                <button
-                  className="ghost-button"
+                <Button
                   disabled={isTestingModel}
                   onClick={() => void handleTestModelConnection()}
                   type="button"
                 >
                   {isTestingModel ? "测试中..." : "测试模型连接"}
-                </button>
+                </Button>
               </div>
             </>
           ) : null}
@@ -336,46 +326,47 @@ export function SettingsPage() {
                 <div className="settings-ai-analysis-card__grid">
                   <div className="settings-ai-row settings-ai-row--schedule">
                     <Field label="自动分析频率">
-                      <select value={form.autoAnalyzeFrequency} onChange={(event) => setForm((current) => ({ ...current, autoAnalyzeFrequency: event.target.value as SettingsFormData["autoAnalyzeFrequency"] }))}>
+                      <Select value={form.autoAnalyzeFrequency} onChange={(event) => setForm((current) => ({ ...current, autoAnalyzeFrequency: event.target.value as SettingsFormData["autoAnalyzeFrequency"] }))}>
                         <option value="5m">5 分钟</option>
                         <option value="10m">10 分钟</option>
                         <option value="30m">30 分钟</option>
                         <option value="1h">1 小时</option>
-                      </select>
+                      </Select>
                     </Field>
                     <Field label="扫描范围">
-                      <select value={form.scanScope} onChange={(event) => setForm((current) => ({ ...current, scanScope: event.target.value as SettingsFormData["scanScope"] }))}>
+                      <Select value={form.scanScope} onChange={(event) => setForm((current) => ({ ...current, scanScope: event.target.value as SettingsFormData["scanScope"] }))}>
                         <option value="watchlist_only">仅自选股</option>
                         <option value="all_markets">全部缓存股票</option>
-                      </select>
+                      </Select>
                     </Field>
                     <Field label="每日 AI 调用上限">
-                      <input inputMode="numeric" value={form.dailyMaxAiCalls} onChange={(event) => setForm((current) => ({ ...current, dailyMaxAiCalls: Number(event.target.value) || 0 }))} />
+                      <Input inputMode="numeric" value={form.dailyMaxAiCalls} onChange={(event) => setForm((current) => ({ ...current, dailyMaxAiCalls: Number(event.target.value) || 0 }))} />
                     </Field>
                   </div>
                   <div className="settings-ai-row settings-ai-row--inputs">
-                    <label className="settings-ai-toggle-field">
-                      <span>使用买卖盘数据</span>
-                      <input
-                        aria-label="使用买卖盘数据"
-                        checked={form.useBidAskData}
-                        onChange={(event) => setForm((current) => ({ ...current, useBidAskData: event.target.checked }))}
-                        type="checkbox"
-                      />
-                    </label>
-                    <label className="settings-ai-toggle-field">
-                      <span>使用财报数据</span>
-                      <input
-                        aria-label="使用财报数据"
-                        checked={form.useFinancialReportData}
-                        onChange={(event) => setForm((current) => ({ ...current, useFinancialReportData: event.target.checked }))}
-                        type="checkbox"
-                      />
-                    </label>
-                  </div>
-                  <div className="settings-ai-row settings-ai-row--levels">
-                    <label className="settings-ai-number-field">
-                      <span>K线根数</span>
+                    <Field label="使用买卖盘数据">
+                      <div className="settings-ai-toggle-box">
+                        <span>使用买卖盘数据</span>
+                        <input
+                          aria-label="使用买卖盘数据"
+                          checked={form.useBidAskData}
+                          onChange={(event) => setForm((current) => ({ ...current, useBidAskData: event.target.checked }))}
+                          type="checkbox"
+                        />
+                      </div>
+                    </Field>
+                    <Field label="使用财报数据">
+                      <div className="settings-ai-toggle-box">
+                        <span>使用财报数据</span>
+                        <input
+                          aria-label="使用财报数据"
+                          checked={form.useFinancialReportData}
+                          onChange={(event) => setForm((current) => ({ ...current, useFinancialReportData: event.target.checked }))}
+                          type="checkbox"
+                        />
+                      </div>
+                    </Field>
+                    <Field label="K线根数">
                       <input
                         aria-label="K线根数"
                         className="settings-inline-number"
@@ -385,12 +376,14 @@ export function SettingsPage() {
                         value={form.aiKlineBarCount}
                         onChange={(event) => setForm((current) => ({ ...current, aiKlineBarCount: Math.max(1, Number(event.target.value) || 1) }))}
                       />
-                    </label>
+                    </Field>
+                  </div>
+                  <div className="settings-ai-row settings-ai-row--levels">
                     <div className="settings-ai-kline-field">
                       <span>K线级别</span>
                       <div className="settings-kline-levels__options" aria-label="K线级别">
                         {aiKlineFrequencyOptions.map((option) => (
-                          <label key={option.id}>
+                          <label className="settings-kline-levels__option" key={option.id}>
                             <input
                               checked={form.aiKlineFrequencies.includes(option.id)}
                               onChange={() => toggleAiKlineFrequency(option.id)}
@@ -409,28 +402,28 @@ export function SettingsPage() {
                 <span className="section-label">风险</span>
                 <div className="form-grid form-grid--three">
                   <Field label="单笔最大亏损">
-                    <select value={form.maxLossPerTradePercent} onChange={(event) => setForm((current) => ({ ...current, maxLossPerTradePercent: Number(event.target.value) }))}>
+                    <Select value={form.maxLossPerTradePercent} onChange={(event) => setForm((current) => ({ ...current, maxLossPerTradePercent: Number(event.target.value) }))}>
                       <option value={0.5}>0.5%</option>
                       <option value={1}>1%</option>
                       <option value={1.5}>1.5%</option>
                       <option value={2}>2%</option>
-                    </select>
+                    </Select>
                   </Field>
                   <Field label="日内最大亏损">
-                    <select value={form.maxDailyLossPercent} onChange={(event) => setForm((current) => ({ ...current, maxDailyLossPercent: Number(event.target.value) }))}>
+                    <Select value={form.maxDailyLossPercent} onChange={(event) => setForm((current) => ({ ...current, maxDailyLossPercent: Number(event.target.value) }))}>
                       <option value={1}>1%</option>
                       <option value={2}>2%</option>
                       <option value={3}>3%</option>
                       <option value={5}>5%</option>
-                    </select>
+                    </Select>
                   </Field>
                   <Field label="最低置信度">
-                    <select value={form.minConfidenceScore} onChange={(event) => setForm((current) => ({ ...current, minConfidenceScore: Number(event.target.value) }))}>
+                    <Select value={form.minConfidenceScore} onChange={(event) => setForm((current) => ({ ...current, minConfidenceScore: Number(event.target.value) }))}>
                       <option value={50}>50</option>
                       <option value={60}>60</option>
                       <option value={70}>70</option>
                       <option value={80}>80</option>
-                    </select>
+                    </Select>
                   </Field>
                 </div>
               </section>
@@ -439,19 +432,19 @@ export function SettingsPage() {
                 <span className="section-label">策略信号</span>
                 <div className="form-grid form-grid--two">
                   <Field label="策略扫描">
-                    <select value={form.signalsEnabled ? "on" : "off"} onChange={(event) => setForm((current) => ({ ...current, signalsEnabled: event.target.value === "on" }))}>
+                    <Select value={form.signalsEnabled ? "on" : "off"} onChange={(event) => setForm((current) => ({ ...current, signalsEnabled: event.target.value === "on" }))}>
                       <option value="on">开启</option>
                       <option value="off">关闭</option>
-                    </select>
+                    </Select>
                   </Field>
                   <Field label="扫描频率">
-                    <select value={form.signalScanFrequency} onChange={(event) => setForm((current) => ({ ...current, signalScanFrequency: event.target.value as SettingsFormData["signalScanFrequency"] }))}>
+                    <Select value={form.signalScanFrequency} onChange={(event) => setForm((current) => ({ ...current, signalScanFrequency: event.target.value as SettingsFormData["signalScanFrequency"] }))}>
                       <option value="5m">5 分钟</option>
                       <option value="10m">10 分钟</option>
                       <option value="15m">15 分钟</option>
                       <option value="30m">30 分钟</option>
                       <option value="1h">1 小时</option>
-                    </select>
+                    </Select>
                   </Field>
                 </div>
               </section>
@@ -461,14 +454,14 @@ export function SettingsPage() {
           {activeTab === "prompt" ? (
             <div className="form-stack">
               <Field label="Assistant 系统提示词">
-                <textarea
+                <Textarea
                   aria-label="Assistant 系统提示词"
                   value={form.assistantSystemPrompt}
                   onChange={(event) => setForm((current) => ({ ...current, assistantSystemPrompt: event.target.value }))}
                 />
               </Field>
               <Field label="AI 推荐系统提示词">
-                <textarea
+                <Textarea
                   aria-label="AI 推荐系统提示词"
                   value={form.recommendationSystemPrompt}
                   onChange={(event) => setForm((current) => ({ ...current, recommendationSystemPrompt: event.target.value }))}
@@ -476,18 +469,19 @@ export function SettingsPage() {
               </Field>
             </div>
           ) : null}
-        </section>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="settings-actions">
-        <button
-          className="primary-button settings-save-button"
+        <Button
+          className="settings-save-button"
           disabled={isSaving}
           onClick={handleSave}
           type="button"
         >
           {isSaving ? "保存中..." : "保存设置"}
-        </button>
+        </Button>
         <p className="settings-status" role="status">
           {statusMessage}
         </p>

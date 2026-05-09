@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   color-scheme: dark;
   --bg: #06111a;
@@ -26,6 +28,34 @@
   --signal-arbitrage-text: oklch(0.98 0.01 315);
   --signal-neutral-bg: oklch(0.4 0.035 250);
   --signal-neutral-text: oklch(0.92 0.015 250);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--panel-strong);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent-fill);
+  --color-primary-foreground: var(--accent-fill-text);
+  --color-secondary: rgba(255, 255, 255, 0.08);
+  --color-secondary-foreground: var(--text);
+  --color-muted: rgba(255, 255, 255, 0.04);
+  --color-muted-foreground: var(--text-muted);
+  --color-accent: rgba(255, 255, 255, 0.08);
+  --color-accent-foreground: var(--text);
+  --color-border: var(--border);
+  --color-input: rgba(255, 255, 255, 0.04);
+  --color-ring: var(--accent);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --shadow-workbench: var(--surface-shadow);
+}
+
+html {
   font-family: "SF Pro Display", "Segoe UI", sans-serif;
   color: var(--text);
   background:
@@ -41,6 +71,8 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  color: inherit;
+  background: transparent;
 }
 
 a {
@@ -1679,16 +1711,14 @@ tbody td {
 }
 
 .settings-ai-row--inputs {
-  grid-template-columns: repeat(2, minmax(180px, 220px));
-  justify-content: start;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(170px, 0.9fr) minmax(150px, 0.75fr);
 }
 
 .settings-ai-row--levels {
-  grid-template-columns: minmax(96px, 116px) minmax(0, 1fr);
-  align-items: end;
+  grid-template-columns: 1fr;
+  align-items: start;
 }
 
-.settings-ai-toggle-field,
 .settings-ai-number-field,
 .settings-ai-kline-field {
   display: flex;
@@ -1697,29 +1727,37 @@ tbody td {
   min-width: 0;
 }
 
-.settings-ai-toggle-field > span,
 .settings-ai-number-field > span,
 .settings-ai-kline-field > span {
   color: rgba(237, 243, 255, 0.9);
   font-size: 0.84rem;
-  font-weight: 700;
+  font-weight: 400;
   white-space: nowrap;
 }
 
-.settings-ai-toggle-field input[type="checkbox"] {
+.settings-ai-toggle-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.settings-ai-toggle-box > span {
+  color: var(--text);
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.settings-ai-toggle-box input[type="checkbox"] {
   width: 18px;
   height: 18px;
   margin: 0;
   accent-color: var(--accent-fill);
-}
-
-.settings-ai-toggle-field {
-  justify-content: space-between;
-  min-height: 78px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.04);
 }
 
 .settings-inline-check {
@@ -1747,7 +1785,7 @@ tbody td {
 .settings-inline-number {
   width: 100%;
   min-width: 0;
-  max-width: 116px;
+  max-width: none;
   height: 48px;
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -1869,7 +1907,7 @@ tbody td {
 
 .pair-detail-quote-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(168px, 1.18fr) minmax(220px, 1.52fr);
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
@@ -1883,6 +1921,7 @@ tbody td {
   min-height: 84px;
   padding: 14px;
   border-right: 1px solid var(--border);
+  min-width: 0;
 }
 
 .pair-detail-quote-strip > div:last-child {
@@ -1903,7 +1942,8 @@ tbody td {
   display: grid;
   align-content: center;
   gap: 10px;
-  min-width: 120px;
+  min-width: 124px;
+  justify-self: end;
 }
 
 .pair-detail-workspace {
@@ -2097,19 +2137,19 @@ tbody td {
   padding-bottom: 1px;
 }
 
-.settings-kline-levels__options label {
+.settings-kline-levels__option {
   align-items: center;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--border);
   border-radius: 999px;
   display: inline-flex;
   gap: 6px;
-  min-height: 38px;
+  min-height: 48px;
   padding: 0 10px;
   white-space: nowrap;
 }
 
-.settings-kline-levels__options label:has(input:checked) {
+.settings-kline-levels__option:has(input:checked) {
   color: var(--accent-fill-text);
   background: var(--accent-fill);
   border-color: transparent;
@@ -2138,6 +2178,8 @@ tbody td {
 }
 
 .financial-page {
+  display: flex;
+  flex-direction: column;
   gap: 18px;
 }
 
@@ -2258,8 +2300,9 @@ tbody td {
 
 .financial-section-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  column-gap: 18px;
+  row-gap: 40px;
 }
 
 .financial-section-card {
@@ -2273,13 +2316,16 @@ tbody td {
 
 .financial-section-card > div:first-child {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  min-width: 0;
 }
 
 .financial-section-card h2 {
   margin: 0;
   font-size: 1rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .financial-section-card dl {
@@ -2296,8 +2342,11 @@ tbody td {
 
 .financial-section-card dd {
   margin: 0;
-  max-width: 58%;
+  max-width: none;
   font-size: 0.9rem;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .financial-empty {
@@ -2316,14 +2365,14 @@ tbody td {
 .financial-analysis-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 18px;
 }
 
 .financial-analysis-grid section {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.035);
@@ -2547,8 +2596,9 @@ tbody td {
 
 .assistant-fold-card__button {
   width: 100%;
-  display: grid;
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   min-width: 0;
   padding: 14px;
   border: 0;
@@ -2564,15 +2614,6 @@ tbody td {
   justify-content: start;
   align-items: center;
   gap: 8px;
-}
-
-.assistant-fold-card__summary {
-  font-size: 0.9rem;
-  color: var(--text-muted);
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .assistant-fold-card__content {
@@ -3358,6 +3399,10 @@ tbody td {
   .settings-ai-row--inputs,
   .settings-ai-row--levels {
     grid-template-columns: 1fr;
+  }
+
+  .settings-ai-kline-field {
+    grid-column: auto;
   }
 
   .financial-toolbar,

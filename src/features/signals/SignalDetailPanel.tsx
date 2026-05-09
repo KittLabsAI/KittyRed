@@ -1,4 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Button } from "../../components/ui/button";
+import { Badge } from "../../components/ui/badge";
 import { formatCurrency } from "../../lib/format";
 import { dismissSignal, executeSignal } from "../../lib/tauri";
 import type { UnifiedSignal } from "../../lib/types";
@@ -115,7 +117,7 @@ export function SignalDetailPanel({ signal }: SignalDetailPanelProps) {
   };
 
   return (
-    <div className="signal-detail-panel">
+    <div className="signal-detail-panel rounded-xl border border-white/8 bg-[color:var(--panel-strong)] p-5 shadow-[var(--shadow-workbench)]">
       <div className="signal-detail__grid">
         <div>
           <span className="section-label">理由</span>
@@ -170,27 +172,24 @@ export function SignalDetailPanel({ signal }: SignalDetailPanelProps) {
           <span className="section-label signal-detail__contributors-label">触发策略</span>
           <div className="signal-detail__contributors">
             {signal.contributors.map((c) => (
-              <span key={c} className="badge">{localizedStrategy(c)}</span>
+              <Badge key={c} className="badge">{localizedStrategy(c)}</Badge>
             ))}
           </div>
 
           <div className="signal-detail__actions">
-            <button
-              className="primary-button"
+            <Button
               disabled={signal.executed || executeMutation.isPending || executeMutation.isSuccess}
               onClick={() => executeMutation.mutate()}
-              type="button"
             >
               {signal.executed || executeMutation.isSuccess ? "已执行" : executeMutation.isPending ? "执行中..." : "执行模拟交易"}
-            </button>
-            <button
-              className="ghost-button"
+            </Button>
+            <Button
               disabled={dismissMutation.isPending}
               onClick={() => dismissMutation.mutate()}
-              type="button"
+              variant="ghost"
             >
               {dismissMutation.isPending ? "忽略中..." : "忽略"}
-            </button>
+            </Button>
           </div>
           {executeMutation.data ? (
             <p className="panel__meta">

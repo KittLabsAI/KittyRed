@@ -261,7 +261,8 @@ mod tests {
         assert_eq!(payload["ok"], json!(true));
         assert_eq!(payload["stockCode"], json!("SHSE.600000"));
         assert_eq!(payload["analysis"]["关键信息总结"], json!("收入和利润稳定"));
-        assert!(payload.get("raw").is_none());
+        assert!(payload.get("rawSections").is_none());
+        assert_eq!(payload["message"], json!("已读取本地缓存的财报 AI 分析结论。"));
 
         let _ = std::fs::remove_file(settings_path);
         let _ = std::fs::remove_file(recommendation_path);
@@ -298,6 +299,7 @@ mod tests {
         let payload: Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(payload["ok"], json!(false));
+        assert!(payload.get("rawSections").is_none());
         assert!(payload["message"]
             .as_str()
             .unwrap()
@@ -305,6 +307,17 @@ mod tests {
 
         let _ = std::fs::remove_file(settings_path);
         let _ = std::fs::remove_file(recommendation_path);
+    }
+
+    #[test]
+    fn preview_tool_result_handles_utf8_boundaries() {
+        let payload = format!(r#"{{"analysis":"{}"}}"#, "强".repeat(260));
+
+        let preview = super::preview_tool_result(&payload);
+
+        assert!(preview.ends_with("..."));
+        assert!(!preview.is_empty());
+        assert!(preview.chars().count() <= 223);
     }
 
     #[tokio::test]
@@ -1467,16 +1480,14 @@ async fn execute_tool(
                         "财报负向因素": analysis.negative_factors,
                         "财报造假嫌疑点": analysis.fraud_risk_points
                     },
-                    "rawSections": snapshot.sections,
                     "sourceRevision": analysis.source_revision,
                     "generatedAt": analysis.generated_at,
-                    "message": "已读取本地缓存的财报原始数据和 AI 分析结论。"
+                    "message": "已读取本地缓存的财报 AI 分析结论。"
                 })
                 .to_string()),
                 None => Ok(json!({
                     "ok": false,
                     "stockCode": symbol,
-                    "rawSections": snapshot.sections,
                     "message": "暂无该股票的财报 AI 分析缓存。请先在财报分析页面拉取全量财报并分析自选股票池。"
                 })
                 .to_string()),
@@ -1752,10 +1763,10 @@ fn optional_bool(arguments: &Value, key: &str) -> Option<bool> {
 
 fn preview_tool_result(result: &str) -> String {
     let trimmed = result.trim();
-    if trimmed.len() <= 220 {
+    if trimmed.chars().count() <= 220 {
         trimmed.to_string()
     } else {
-        format!("{}...", &trimmed[..220])
+        format!("{}...", trimmed.chars().take(220).collect::<String>())
     }
 }
 

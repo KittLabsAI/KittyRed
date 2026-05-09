@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { loadSettingsFormData } from "./lib/settings";
 import { AppRouter } from "./router";
 import { useAppStore } from "./store/appStore";
-import "./styles.css";
 
 const queryClient = new QueryClient();
 

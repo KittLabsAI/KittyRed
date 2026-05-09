@@ -1,6 +1,10 @@
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
+import { Input } from "../../components/ui/input";
+import { Select } from "../../components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell } from "../../components/ui/table";
 import { formatCompact, formatPercent } from "../../lib/format";
 import type { MarketRow } from "../../lib/types";
 import {
@@ -110,64 +114,64 @@ export function MarketsPage() {
 
   return (
     <section className="page-stack">
-      <section className="panel watchlist-add-card">
-        <div className="panel__header">
+      <Card className="watchlist-add-card overflow-hidden">
+        <CardHeader className="border-b border-border px-6 py-6">
           <div>
-            <span className="section-label">自选股票池</span>
-            <h3>添加 A 股标的</h3>
+            <span className="section-label text-xs font-semibold uppercase tracking-[0.1em] text-accent">自选股票池</span>
+            <CardTitle className="mt-2 text-[1.3rem]">添加 A 股标的</CardTitle>
           </div>
-          <span className="panel__meta">添加后立即刷新自选行情</span>
-        </div>
-        <label className="search-shell search-shell--watchlist">
+          <span className="panel__meta text-sm text-muted-foreground">添加后立即刷新自选行情</span>
+        </CardHeader>
+        <CardContent className="grid gap-4 px-6 py-6">
           <span className="sr-only">搜索并添加自选股票</span>
-          <input
+          <Input
             aria-label="搜索并添加自选股票"
             onChange={(event) => setWatchlistSearch(event.target.value)}
             placeholder="输入股票名称或代码，例如 茅台、600519"
             value={watchlistSearch}
           />
-        </label>
-        {symbolSearchQuery.isFetching ? (
-          <p className="panel__meta" role="status">正在匹配 A 股股票...</p>
-        ) : null}
-        {symbolSearchQuery.isError ? (
-          <p className="panel__meta panel__meta--danger" role="alert">
-            股票搜索失败：{messageFromError(symbolSearchQuery.error)}
-          </p>
-        ) : null}
-        {symbolSearchQuery.data?.length ? (
-          <div className="watchlist-search-results">
-            {symbolSearchQuery.data.map((item) => (
-              <button
-                aria-label={`添加 ${item.symbol} ${item.name}`}
-                className="watchlist-search-result"
-                key={item.symbol}
-                onClick={() => void handleAddWatchlistSymbol(item.symbol)}
-                type="button"
-              >
-                <strong>{item.symbol}</strong>
-                <span>{item.name}</span>
-                <small>{item.market}</small>
-              </button>
-            ))}
-          </div>
-        ) : null}
-        {deferredWatchlistSearch && !symbolSearchQuery.isFetching && symbolSearchQuery.data?.length === 0 ? (
-          <p className="panel__meta" role="status">未找到匹配股票</p>
-        ) : null}
-        {addStatus ? <p className="panel__meta" role="status">{addStatus}</p> : null}
-      </section>
+          {symbolSearchQuery.isFetching ? (
+            <p className="panel__meta" role="status">正在匹配 A 股股票...</p>
+          ) : null}
+          {symbolSearchQuery.isError ? (
+            <p className="panel__meta panel__meta--danger text-[color:var(--signal-danger-text)]" role="alert">
+              股票搜索失败：{messageFromError(symbolSearchQuery.error)}
+            </p>
+          ) : null}
+          {symbolSearchQuery.data?.length ? (
+            <div className="watchlist-search-results">
+              {symbolSearchQuery.data.map((item) => (
+                <button
+                  aria-label={`添加 ${item.symbol} ${item.name}`}
+                  className="watchlist-search-result grid w-full gap-1 rounded-xl border border-border bg-white/4 px-4 py-3 text-left transition-colors hover:bg-white/8"
+                  key={item.symbol}
+                  onClick={() => void handleAddWatchlistSymbol(item.symbol)}
+                  type="button"
+                >
+                  <strong>{item.symbol}</strong>
+                  <span className="text-sm text-foreground/90">{item.name}</span>
+                  <small className="text-xs text-muted-foreground">{item.market}</small>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {deferredWatchlistSearch && !symbolSearchQuery.isFetching && symbolSearchQuery.data?.length === 0 ? (
+            <p className="panel__meta" role="status">未找到匹配股票</p>
+          ) : null}
+          {addStatus ? <p className="panel__meta" role="status">{addStatus}</p> : null}
+        </CardContent>
+      </Card>
 
-      <section className="panel panel--wide">
-        <div className="panel__header panel__header--markets">
+      <Card className="overflow-hidden">
+        <CardHeader className="flex flex-col items-stretch justify-between gap-4 border-b border-border px-6 py-6 lg:flex-row lg:items-end">
           <div className="panel__header-copy">
-            <span className="section-label">行情</span>
-            <h2>A股行情</h2>
+            <span className="section-label text-xs font-semibold uppercase tracking-[0.1em] text-accent">行情</span>
+            <CardTitle className="mt-2 text-[1.7rem]">A股行情</CardTitle>
           </div>
-          <div className="panel__header-controls panel__header-controls--markets">
-            <label className="search-shell search-shell--markets">
+          <div className="panel__header-controls panel__header-controls--markets flex flex-col gap-2 md:flex-row md:items-center">
+            <label className="search-shell search-shell--markets block">
               <span className="sr-only">搜索股票</span>
-              <input
+              <Input
                 aria-label="搜索股票"
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="搜索代码或名称，例如 600000、平安银行"
@@ -176,7 +180,7 @@ export function MarketsPage() {
             </label>
             <label className="search-shell">
               <span className="sr-only">市场筛选</span>
-              <select
+              <Select
                 aria-label="市场筛选"
                 className="control-select"
                 onChange={(event) => setMarketFilter(event.target.value)}
@@ -185,49 +189,50 @@ export function MarketsPage() {
                 <option value="all">全部市场</option>
                 <option value="shse">沪市A股</option>
                 <option value="szse">深市A股</option>
-              </select>
+              </Select>
             </label>
           </div>
-        </div>
-        <p className="panel__meta">
-          {marketsQuery.isFetching ? "正在刷新 AKShare 行情..." : "展示沪深 A 股行情，非 A 股标的不会出现在列表中。"}
-        </p>
-
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>代码</th>
-                <th>名称</th>
-                <th>市场</th>
-                <th>最新价</th>
-                <th>涨跌幅</th>
-                <th>成交额</th>
-                <th>更新时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr
+        </CardHeader>
+        <CardContent className="px-6 py-6">
+          <p className="panel__meta">
+            {marketsQuery.isFetching ? "正在刷新 AKShare 行情..." : "展示沪深 A 股行情，非 A 股标的不会出现在列表中。"}
+          </p>
+          <TableShell className="table-shell">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>代码</TableHead>
+                  <TableHead>名称</TableHead>
+                  <TableHead>市场</TableHead>
+                  <TableHead>最新价</TableHead>
+                  <TableHead>涨跌幅</TableHead>
+                  <TableHead>成交额</TableHead>
+                  <TableHead>更新时间</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((row) => (
+                  <TableRow
                   className="market-row"
                   key={row.symbol}
                   onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}
                 >
-                  <td>{row.symbol}</td>
-                  <td>{row.baseAsset}</td>
-                  <td>{marketLabel(row)}</td>
-                  <td>{formatCny(row.last)}</td>
-                  <td className={row.change24h >= 0 ? "positive-text" : "negative-text"}>
+                  <TableCell>{row.symbol}</TableCell>
+                  <TableCell>{row.baseAsset}</TableCell>
+                  <TableCell>{marketLabel(row)}</TableCell>
+                  <TableCell>{formatCny(row.last)}</TableCell>
+                  <TableCell className={row.change24h >= 0 ? "positive-text" : "negative-text"}>
                     {formatPercent(row.change24h)}
-                  </td>
-                  <td>{formatCompact(row.volume24h)}</td>
-                  <td>{new Date(row.updatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                  </TableCell>
+                  <TableCell>{formatCompact(row.volume24h)}</TableCell>
+                  <TableCell>{new Date(row.updatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</TableCell>
+                </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableShell>
+        </CardContent>
+      </Card>
     </section>
   );
 }

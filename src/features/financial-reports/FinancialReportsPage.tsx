@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BarChart3, FileText, RefreshCw, Square, Wand2 } from "lucide-react";
+import { Button } from "../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import {
   cancelFinancialReportFetch,
   getFinancialReportFetchProgress,
@@ -67,40 +69,40 @@ export function FinancialReportsPage() {
         </div>
       </div>
 
-      <section className="panel financial-workbench">
+      <Card className="panel financial-workbench">
+        <CardContent className="grid gap-5 px-6 py-6">
         <div className="financial-toolbar">
           <div className="financial-scope-copy">
             <span>拉取范围</span>
             <strong>沪深 A 股近两年全量财报</strong>
           </div>
           <div className="financial-actions">
-            <button
-              className="primary-button"
+            <Button
               disabled={isRunning || fetchMutation.isPending}
               onClick={() => fetchMutation.mutate()}
               type="button"
             >
               <RefreshCw size={16} />
               拉取近两年全量财报
-            </button>
-            <button
-              className="ghost-button"
+            </Button>
+            <Button
               disabled={!isRunning || cancelMutation.isPending}
               onClick={() => cancelMutation.mutate()}
               type="button"
+              variant="ghost"
             >
               <Square size={15} />
               中断拉取
-            </button>
-            <button
-              className="ghost-button"
+            </Button>
+            <Button
               disabled={rowsCount === 0 || analyzeMutation.isPending}
               onClick={() => analyzeMutation.mutate()}
               type="button"
+              variant="ghost"
             >
               <Wand2 size={16} />
               分析自选股票池财报
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -114,7 +116,8 @@ export function FinancialReportsPage() {
           </div>
           {progress?.errorMessage ? <p>{progress.errorMessage}</p> : null}
         </div>
-      </section>
+        </CardContent>
+      </Card>
 
       <section className="financial-summary-band">
         <div>
@@ -144,10 +147,6 @@ export function FinancialReportsPage() {
                   <dt>缓存行数</dt>
                   <dd>{section.rowCount}</dd>
                 </div>
-                <div>
-                  <dt>来源</dt>
-                  <dd>{section.source}</dd>
-                </div>
               </dl>
             </article>
           ))}
@@ -159,13 +158,14 @@ export function FinancialReportsPage() {
         </section>
       )}
 
-      <section className="panel financial-analysis-panel">
-        <div className="panel__header">
+      <Card className="panel financial-analysis-panel">
+        <CardHeader className="px-6 pb-4 pt-6">
           <div className="panel__header-copy">
-            <h2>AI财报结论</h2>
-            <p className="panel__meta">推荐和 Assistant 会读取这里缓存的四项结论和原始财报数据。</p>
+            <CardTitle>AI财报结论</CardTitle>
+            <p className="panel__meta">推荐和 Assistant 只会读取这里缓存的四项财报结论。</p>
           </div>
-        </div>
+        </CardHeader>
+        <CardContent className="px-6 pb-6 pt-0">
         {analyses.length > 0 ? (
           <div className="financial-analysis-grid">
             {analyses.map((analysis) => (
@@ -185,7 +185,8 @@ export function FinancialReportsPage() {
         ) : (
           <p className="financial-analysis-empty">暂无 AI 财报结论。完成全量财报拉取后可以分析自选股票池。</p>
         )}
-      </section>
+        </CardContent>
+      </Card>
     </section>
   );
 }

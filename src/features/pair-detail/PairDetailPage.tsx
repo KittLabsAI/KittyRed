@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
+import { Button } from "../../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/card";
+import { Input } from "../../components/ui/input";
+import { Label } from "../../components/ui/label";
+import { Select } from "../../components/ui/select";
 import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
 import {
   createManualPaperOrder,
@@ -90,6 +95,7 @@ export function PairDetailPage() {
   const referencePrice = marketRow?.last ?? pairDetail?.venues[0]?.last ?? 0;
   const paperAccounts = paperAccountsQuery.data ?? [];
   const paperAccount = paperAccounts[0];
+  const availableCash = paperAccount?.availableUsdt ?? 0;
   const venueRows = useMemo(() => pairDetail?.venues ?? [], [pairDetail?.venues]);
   const bestVenue = venueRows[0];
   const quoteUpdatedAt = marketRow?.updatedAt ?? bestVenue?.updatedAt;
@@ -154,13 +160,14 @@ export function PairDetailPage() {
 
   return (
     <section className="page-stack pair-detail-page">
-      <section className="pair-detail-hero">
+      <Card className="pair-detail-hero overflow-hidden">
+        <CardContent className="grid gap-5 p-6 lg:grid-cols-[220px_minmax(620px,1fr)_max-content] lg:items-stretch">
         <div className="pair-detail-hero__identity">
           <span className="section-label">个股详情</span>
-          <h2>{pairDetail?.coinInfo.name || symbol}</h2>
+          <h2 className="mt-2 text-[1.7rem] font-semibold leading-tight">{pairDetail?.coinInfo.name || symbol}</h2>
           <p>{symbol} · 沪深 A 股 · AKShare 行情</p>
         </div>
-        <div className="pair-detail-quote-strip">
+        <div className="pair-detail-quote-strip rounded-xl border border-white/8 bg-white/[0.025]">
           <div>
             <span>最新价</span>
             <strong>{referencePrice > 0 ? formatCurrency(referencePrice) : "--"}</strong>
@@ -180,29 +187,31 @@ export function PairDetailPage() {
             <strong>{quoteUpdatedAt ? formatDateTime(quoteUpdatedAt) : "等待刷新"}</strong>
           </div>
         </div>
-        <div className="pair-detail-actions">
-          <button className="ghost-button" disabled={analyzeMutation.isPending} onClick={() => analyzeMutation.mutate()} type="button">
+        <div className="pair-detail-actions lg:col-start-3 lg:justify-self-end">
+          <Button className="w-full min-w-[116px]" disabled={analyzeMutation.isPending} onClick={() => analyzeMutation.mutate()} variant="ghost">
             {analyzeMutation.isPending ? "分析中..." : "AI 分析"}
-          </button>
-          <button className="ghost-button" onClick={handleAskAssistant} type="button">
+          </Button>
+          <Button className="w-full min-w-[116px]" onClick={handleAskAssistant} variant="ghost">
             询问助手
-          </button>
+          </Button>
         </div>
-      </section>
+        </CardContent>
+      </Card>
 
       <section className="pair-detail-workspace">
-        <section className="panel panel--wide pair-detail-chart-panel">
-          <div className="panel__header">
+        <Card className="panel panel--wide pair-detail-chart-panel overflow-hidden">
+          <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <span className="section-label">K 线</span>
-              <h3>{symbol}</h3>
+              <CardTitle className="mt-1 text-lg">{symbol}</CardTitle>
             </div>
-            <select className="control-select control-select--compact" onChange={(event) => setCandleInterval(event.target.value as (typeof candleIntervals)[number])} value={candleInterval}>
+            <Select className="control-select control-select--compact h-10 w-full lg:w-[110px]" onChange={(event) => setCandleInterval(event.target.value as (typeof candleIntervals)[number])} value={candleInterval}>
               {candleIntervals.map((interval) => (
                 <option key={interval} value={interval}>{interval}</option>
               ))}
-            </select>
-          </div>
+            </Select>
+          </CardHeader>
+          <CardContent className="pt-0">
           {candlesQuery.isFetching ? <p className="panel__meta" role="status">K 线加载中...</p> : null}
           {candlesQuery.isError ? (
             <p className="panel__meta panel__meta--danger" role="alert">
@@ -210,18 +219,20 @@ export function PairDetailPage() {
             </p>
           ) : null}
           <CandlestickChart bars={latestBars} />
-        </section>
+          </CardContent>
+        </Card>
 
-        <section className="panel paper-trade-card">
-            <div className="panel__header">
+        <Card className="panel paper-trade-card overflow-hidden">
+            <CardHeader className="pb-4">
               <div>
                 <span className="section-label">模拟委托</span>
               </div>
-            </div>
+            </CardHeader>
+            <CardContent className="space-y-5 pt-0">
             <div className="paper-trade-summary">
               <div>
                 <span>可用资金</span>
-                <strong>{formatCurrency(paperAccount?.availableUsdt ?? 0)}</strong>
+                <strong>{formatCurrency(availableCash)}</strong>
               </div>
               <div>
                 <span>参考价</span>
@@ -230,46 +241,58 @@ export function PairDetailPage() {
             </div>
             <div className="paper-trade-grid">
               <div className="paper-side-switch" aria-label="方向">
-                <button
+                <Button
                   className={paperSide === "buy" ? "paper-side-switch__item paper-side-switch__item--active" : "paper-side-switch__item"}
                   onClick={() => setPaperSide("buy")}
-                  type="button"
+                  size="sm"
+                  variant="ghost"
                 >
                   买入
-                </button>
-                <button
+                </Button>
+                <Button
                   className={paperSide === "sell" ? "paper-side-switch__item paper-side-switch__item--active" : "paper-side-switch__item"}
                   onClick={() => setPaperSide("sell")}
-                  type="button"
+                  size="sm"
+                  variant="ghost"
                 >
                   卖出
-                </button>
+                </Button>
               </div>
-              <label>
-                <span>委托数量（股）</span>
-                <input className="control-input" inputMode="decimal" onChange={(event) => setPaperQuantity(event.target.value)} value={paperQuantity} />
-              </label>
+              <div className="grid gap-2">
+                <Label htmlFor="paper-quantity">委托数量（股）</Label>
+                <Input
+                  id="paper-quantity"
+                  className="control-input"
+                  inputMode="decimal"
+                  onChange={(event) => setPaperQuantity(event.target.value)}
+                  value={paperQuantity}
+                />
+              </div>
             </div>
-            <button
-              className="primary-button"
+            <Button
+              className="w-full"
               disabled={!paperAccount || manualOrderMutation.isPending || Number(paperQuantity) <= 0}
               onClick={() => manualOrderMutation.mutate()}
-              type="button"
             >
               {manualOrderMutation.isPending ? "提交中..." : "生成模拟委托"}
-            </button>
+            </Button>
             {manualOrderMutation.data ? (
               <p className="panel__meta">
                 {manualOrderMutation.data.message}
               </p>
             ) : null}
-        </section>
+            </CardContent>
+        </Card>
 
-        <article className="panel pair-detail-advice-panel">
-          <div className="panel__header">
-            <h3>最新建议</h3>
+        <Card className="panel pair-detail-advice-panel overflow-hidden">
+          <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle className="text-lg">最新建议</CardTitle>
+              <CardDescription>优先展示该股票最近一次可用建议。</CardDescription>
+            </div>
             <span className="panel__meta">{latestRecommendation?.generatedAt ? formatDateTime(latestRecommendation.generatedAt) : "暂无"}</span>
-          </div>
+          </CardHeader>
+          <CardContent className="pt-0">
           {symbolRecommendation ? (
             <div className="recommendation-card__body">
               <strong>{symbolRecommendation.direction}</strong>
@@ -285,7 +308,8 @@ export function PairDetailPage() {
           ) : (
             <p className="panel__meta">暂无该股票的投资建议。</p>
           )}
-        </article>
+          </CardContent>
+        </Card>
       </section>
     </section>
   );

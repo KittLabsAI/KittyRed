@@ -1,5 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useAppStore } from "../../store/appStore";
+import { Button } from "../ui/button";
+import { cn } from "../../lib/utils";
 
 type NavigationItem = {
   to: string;
@@ -23,18 +25,23 @@ export function Sidebar() {
   const openAssistant = useAppStore((state) => state.openAssistant);
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar border-border bg-[var(--bg-elevated)] text-foreground">
       <div>
         <div className="sidebar__brand">
-          <span>A股投资助手</span>
-          <strong>KittyRed</strong>
+          <span className="text-xs uppercase tracking-[0.08em] text-muted-foreground">A股投资助手</span>
+          <strong className="text-[1.15rem]">KittyRed</strong>
         </div>
         <nav aria-label="Primary">
           <ul>
             {navigationItems.map((item) => (
               <li key={item.label}>
                 <NavLink
-                  className={({ isActive }) => `sidebar__nav-link${isActive ? " sidebar__nav-link--active" : ""}`}
+                  className={({ isActive }) =>
+                    cn(
+                      "sidebar__nav-link rounded-lg border border-transparent px-3 py-2 text-sm text-foreground/85 transition-colors duration-150 hover:bg-white/8 hover:text-foreground",
+                      isActive && "sidebar__nav-link--active bg-primary text-primary-foreground",
+                    )
+                  }
                   end={item.end}
                   to={item.to}
                 >
@@ -46,9 +53,9 @@ export function Sidebar() {
         </nav>
       </div>
       <div className="sidebar__footer">
-        <button className="sidebar__button" onClick={openAssistant} type="button">
+        <Button className="sidebar__button w-full" onClick={openAssistant} type="button">
           智能助手
-        </button>
+        </Button>
       </div>
     </aside>
   );

@@ -32,7 +32,7 @@ const SettingsPage = lazy(() =>
 
 function RouteLoading() {
   return (
-    <div aria-live="polite" className="route-loading" role="status">
+    <div aria-live="polite" className="route-loading grid min-h-[180px] place-items-center rounded-xl border border-border bg-card p-6 text-muted-foreground shadow-[var(--shadow-workbench)]" role="status">
       页面加载中...
     </div>
   );

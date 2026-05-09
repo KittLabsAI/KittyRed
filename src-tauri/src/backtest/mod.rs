@@ -428,11 +428,16 @@ impl BacktestService {
             trades.iter().filter(|trade| trade.pnl_cny > 0.0).count() as f64 / trades.len() as f64
                 * 100.0
         };
-        let timepoints = self.snapshot_timepoints(&run.dataset_id)?;
-        let equity_curve = if timepoints.is_empty() {
-            equity_curve_from_trade_exits(&trades)
-        } else {
-            equity_curve_from_timepoints(&timepoints, &trades)
+        let equity_curve = match self.load_equity_curve(backtest_id)? {
+            curve if !curve.is_empty() => curve,
+            _ => {
+                let timepoints = self.snapshot_timepoints(&run.dataset_id)?;
+                if timepoints.is_empty() {
+                    equity_curve_from_trade_exits(&trades)
+                } else {
+                    equity_curve_from_timepoints(&timepoints, &trades)
+                }
+            }
         };
 
         Ok(BacktestSummaryDto {
@@ -449,14 +454,15 @@ impl BacktestService {
     }
 
     pub fn delete_run(&self, backtest_id: &str) -> anyhow::Result<()> {
-        self.db
-            .lock()
-            .expect("backtest db lock poisoned")
-            .connection()
-            .execute(
-                "DELETE FROM backtest_runs WHERE backtest_id = ?1",
-                params![backtest_id],
-            )?;
+        let db = self.db.lock().expect("backtest db lock poisoned");
+        db.connection().execute(
+            "DELETE FROM backtest_runs WHERE backtest_id = ?1",
+            params![backtest_id],
+        )?;
+        db.connection().execute(
+            "DELETE FROM backtest_equity_curve WHERE backtest_id = ?1",
+            params![backtest_id],
+        )?;
         Ok(())
     }
 
@@ -817,6 +823,7 @@ impl BacktestService {
 
         let mut positions: Vec<VirtualPosition> = Vec::new();
         let mut trades: Vec<BacktestTradeDto> = Vec::new();
+        let mut equity_curve: Vec<BacktestEquityPointDto> = Vec::new();
         for (index, (captured_at, items)) in grouped.iter().enumerate() {
             if cancel.load(Ordering::SeqCst) {
                 bail!("回测已取消");
@@ -863,6 +870,20 @@ impl BacktestService {
                     positions.push(position);
                 }
             }
+
+            let realized: f64 = trades.iter().map(|t| t.pnl_percent).sum();
+            let unrealized: f64 = positions
+                .iter()
+                .filter_map(|p| {
+                    let snapshot = current_by_symbol.get(&p.symbol)?;
+                    Some(((snapshot.last_price - p.entry_price) / p.entry_price) * 100.0)
+                })
+                .sum();
+            equity_curve.push(BacktestEquityPointDto {
+                captured_at: captured_at.clone(),
+                cumulative_pnl_percent: round2(realized + unrealized),
+            });
+
             self.set_run_progress(
                 &run.backtest_id,
                 index as u32 + 1,
@@ -886,7 +907,17 @@ impl BacktestService {
                 }
             }
         }
-        self.complete_run(&run.backtest_id, &trades)
+
+        if let Some((captured_at, _)) = grouped.iter().next_back() {
+            let realized: f64 = trades.iter().map(|t| t.pnl_percent).sum();
+            equity_curve.push(BacktestEquityPointDto {
+                captured_at: captured_at.clone(),
+                cumulative_pnl_percent: round2(realized),
+            });
+        }
+
+        self.insert_equity_curve(&run.backtest_id, &equity_curve)?;
+        self.complete_run(&run.backtest_id, &trades, &equity_curve)
     }
 
     fn cancel_flag(&self, id: &str) -> Arc<AtomicBool> {
@@ -1373,6 +1404,14 @@ impl BacktestService {
                 "DELETE FROM backtest_trades WHERE backtest_id = ?1",
                 params![backtest_id],
             )?;
+        self.db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "DELETE FROM backtest_equity_curve WHERE backtest_id = ?1",
+                params![backtest_id],
+            )?;
         Ok(())
     }
 
@@ -1380,6 +1419,10 @@ impl BacktestService {
         let db = self.db.lock().expect("backtest db lock poisoned");
         db.connection().execute(
             "DELETE FROM backtest_trades WHERE backtest_id = ?1",
+            params![backtest_id],
+        )?;
+        db.connection().execute(
+            "DELETE FROM backtest_equity_curve WHERE backtest_id = ?1",
             params![backtest_id],
         )?;
         db.connection().execute(
@@ -1502,7 +1545,37 @@ impl BacktestService {
         Ok(())
     }
 
-    fn complete_run(&self, backtest_id: &str, trades: &[BacktestTradeDto]) -> anyhow::Result<()> {
+    fn insert_equity_curve(
+        &self,
+        backtest_id: &str,
+        curve: &[BacktestEquityPointDto],
+    ) -> anyhow::Result<()> {
+        let db = self.db.lock().expect("backtest db lock poisoned");
+        let conn = db.connection();
+        for point in curve {
+            conn.execute(
+                "INSERT OR REPLACE INTO backtest_equity_curve (backtest_id, captured_at, cumulative_pnl_percent) VALUES (?1, ?2, ?3)",
+                params![backtest_id, point.captured_at, point.cumulative_pnl_percent],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn load_equity_curve(&self, backtest_id: &str) -> anyhow::Result<Vec<BacktestEquityPointDto>> {
+        let db = self.db.lock().expect("backtest db lock poisoned");
+        let mut statement = db.connection().prepare(
+            "SELECT captured_at, cumulative_pnl_percent FROM backtest_equity_curve WHERE backtest_id = ?1 ORDER BY captured_at ASC",
+        )?;
+        let rows = statement.query_map(params![backtest_id], |row| {
+            Ok(BacktestEquityPointDto {
+                captured_at: row.get(0)?,
+                cumulative_pnl_percent: row.get(1)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    fn complete_run(&self, backtest_id: &str, trades: &[BacktestTradeDto], equity_curve: &[BacktestEquityPointDto]) -> anyhow::Result<()> {
         let total_pnl_cny = trades.iter().map(|trade| trade.pnl_cny).sum::<f64>();
         let total_pnl_percent = trades.iter().map(|trade| trade.pnl_percent).sum::<f64>();
         let win = trades.iter().filter(|trade| trade.pnl_cny > 0.0).count() as u32;
@@ -1543,7 +1616,7 @@ impl BacktestService {
                     flat,
                     round2(total_pnl_cny),
                     round2(total_pnl_percent),
-                    max_drawdown(trades),
+                    max_drawdown_from_curve(equity_curve),
                     profit_factor,
                     now_rfc3339(),
                 ],
@@ -1971,6 +2044,11 @@ fn maybe_exit_position(
     max_holding_days: u32,
     captured_at: &str,
 ) -> Option<BacktestTradeDto> {
+    let entry_date = position.entry_at.get(0..10).unwrap_or("");
+    let exit_date = captured_at.get(0..10).unwrap_or("");
+    if entry_date == exit_date {
+        return None;
+    }
     if let Some(stop_loss) = position.stop_loss {
         if snapshot.low_price <= stop_loss {
             return Some(close_position(
@@ -2094,6 +2172,16 @@ fn max_drawdown(trades: &[BacktestTradeDto]) -> f64 {
         equity += trade.pnl_percent;
         peak = peak.max(equity);
         drawdown = drawdown.max(peak - equity);
+    }
+    round2(drawdown)
+}
+
+fn max_drawdown_from_curve(curve: &[BacktestEquityPointDto]) -> f64 {
+    let mut peak: f64 = 0.0;
+    let mut drawdown: f64 = 0.0;
+    for point in curve {
+        peak = peak.max(point.cumulative_pnl_percent);
+        drawdown = drawdown.max(peak - point.cumulative_pnl_percent);
     }
     round2(drawdown)
 }
@@ -2366,8 +2454,9 @@ mod tests {
         for trade in &trades {
             service.insert_trade(trade).expect("trade should insert");
         }
+        let equity_curve = vec![];
         service
-            .complete_run(&backtest_id, &trades)
+            .complete_run(&backtest_id, &trades, &equity_curve)
             .expect("run should complete");
 
         let summary = service.summary(&backtest_id).expect("summary should load");
