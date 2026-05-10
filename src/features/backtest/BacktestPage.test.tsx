@@ -3,6 +3,27 @@ import userEvent from "@testing-library/user-event";
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { BacktestPage } from "./BacktestPage";
+import * as tauri from "../../lib/tauri";
+
+vi.mock("echarts", () => ({
+  default: undefined,
+  init: () => ({
+    setOption: vi.fn(),
+    resize: vi.fn(),
+    dispose: vi.fn(),
+  }),
+  graphic: {
+    LinearGradient: class LinearGradientMock {
+      constructor(
+        public x0: number,
+        public y0: number,
+        public x1: number,
+        public y1: number,
+        public colorStops: Array<{ offset: number; color: string }>,
+      ) {}
+    },
+  },
+}));
 
 const {
   createBacktestDatasetMock,
@@ -216,6 +237,20 @@ vi.mock("../../lib/tauri", () => ({
       { capturedAt: "2026-04-01T10:00:00+08:00", cumulativePnlPercent: 0 },
       { capturedAt: "2026-04-02T10:00:00+08:00", cumulativePnlPercent: 2.67 },
     ],
+    openPositions: [
+      {
+        signalId: "sig-open-1",
+        symbol: "SZSE.000001",
+        stockName: "平安银行",
+        entryPrice: 11.2,
+        entryAt: "2026-04-03T10:00:00+08:00",
+        markPrice: 11.45,
+        amountCny: 18000,
+        holdingPeriods: 3,
+        unrealizedPnlCny: 369.64,
+        unrealizedPnlPercent: 2.05,
+      },
+    ],
   })),
 }));
 
@@ -287,8 +322,88 @@ describe("BacktestPage", () => {
 
     expect(await screen.findByText("总收益")).toBeInTheDocument();
     expect(screen.getByText("+6.30%")).toBeInTheDocument();
+    expect(screen.getByText("开仓 + 平仓")).toBeInTheDocument();
+    expect(screen.getByLabelText("收益曲线")).toBeInTheDocument();
     expect(screen.getByText("历史 K 线回踩后放量。")).toBeInTheDocument();
     expect(screen.getByText("止盈")).toBeInTheDocument();
-    expect(screen.getByText("+2.67%")).toBeInTheDocument();
+    expect(screen.getAllByText("+2.67%").length).toBeGreaterThan(0);
+    expect(screen.getByText("最终持仓")).toBeInTheDocument();
+    expect(screen.getByText("总资产")).toBeInTheDocument();
+    expect(screen.getByText("总现金")).toBeInTheDocument();
+    expect(screen.getByText("总市值")).toBeInTheDocument();
+    expect(screen.getByText("总盈亏")).toBeInTheDocument();
+    expect(screen.getAllByText("平安银行").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("无").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("+2.05%").length).toBeGreaterThan(0);
+    expect(screen.getByText("+6.30%")).toHaveClass("positive-text");
+    expect(screen.getAllByText("¥1,260").find((node) => node.tagName === "STRONG")).toHaveClass("positive-text");
+    expect(
+      screen.getByText("模拟开平仓").compareDocumentPosition(screen.getByText("信号明细")),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByText("未实现盈亏")).not.toBeInTheDocument();
+  });
+
+  it("paginates trade cards and filters by stock", async () => {
+    const user = userEvent.setup();
+    vi.mocked(tauri.listBacktestTrades).mockResolvedValueOnce(
+      Array.from({ length: 11 }, (_, index) => ({
+        tradeId: `trade-${index + 1}`,
+        backtestId: "bt-1",
+        signalId: `sig-${index + 1}`,
+        symbol: `SHSE.600${String(index + 1).padStart(3, "0")}`,
+        stockName: `股票${index + 1}`,
+        direction: "long",
+        entryPrice: 8 + index * 0.1,
+        entryAt: `2026-04-${String(index + 1).padStart(2, "0")}T10:00:00+08:00`,
+        exitPrice: 8.5 + index * 0.1,
+        exitAt: `2026-04-${String(index + 1).padStart(2, "0")}T15:00:00+08:00`,
+        exitReason: "take_profit",
+        amountCny: 10000 + index * 100,
+        holdingPeriods: 2,
+        pnlCny: 100 + index,
+        pnlPercent: 1 + index * 0.1,
+      })),
+    );
+    vi.mocked(tauri.getBacktestSummary).mockResolvedValueOnce({
+      backtestId: "bt-1",
+      totalSignals: 48,
+      tradeCount: 8,
+      winRate: 62.5,
+      totalPnlCny: 1260,
+      totalPnlPercent: 6.3,
+      maxDrawdownPercent: 1.8,
+      profitFactor: 1.7,
+      equityCurve: [
+        { capturedAt: "2026-04-01T10:00:00+08:00", cumulativePnlPercent: 0 },
+        { capturedAt: "2026-04-02T10:00:00+08:00", cumulativePnlPercent: 2.67 },
+      ],
+      openPositions: [
+        {
+          signalId: "sig-open-1",
+          symbol: "SZSE.000001",
+          stockName: "平安银行",
+          entryPrice: 11.2,
+          entryAt: "2026-05-01T10:00:00+08:00",
+          markPrice: 11.45,
+          amountCny: 18000,
+          holdingPeriods: 3,
+          unrealizedPnlCny: 369.64,
+          unrealizedPnlPercent: 2.05,
+        },
+      ],
+    });
+
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "回测结果分析" }));
+    expect(await screen.findByText("第 1 / 2 页，每页 10 条")).toBeInTheDocument();
+    const tradeStockFilter = screen.getAllByRole("combobox", { name: "筛选个股" })[1];
+    await user.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(screen.getByText("第 2 / 2 页，每页 10 条")).toBeInTheDocument());
+    expect(screen.getAllByText("无").length).toBeGreaterThan(0);
+
+    await user.selectOptions(tradeStockFilter, "SHSE.600000");
+    expect(screen.getAllByText("浦发银行").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/第 1 \/ 1 页/)).not.toBeInTheDocument();
   });
 });

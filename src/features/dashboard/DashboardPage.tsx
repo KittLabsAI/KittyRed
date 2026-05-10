@@ -1,11 +1,11 @@
-import { Link } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { Link, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { AnalyzeJobsPanel } from "../../components/jobs/AnalyzeJobsPanel";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell } from "../../components/ui/table";
 import { formatCompact, formatPercent } from "../../lib/format";
-import { getPortfolioOverview, listMarkets, triggerRecommendation } from "../../lib/tauri";
+import { getPortfolioOverview, listMarkets } from "../../lib/tauri";
 
 function formatCny(value: number) {
   return new Intl.NumberFormat("zh-CN", {
@@ -25,14 +25,12 @@ function isAShareSymbol(symbol: string) {
 }
 
 export function DashboardPage() {
+  const navigate = useNavigate();
   const marketsQuery = useQuery({
     queryKey: ["markets"],
     queryFn: listMarkets,
     refetchInterval: 30_000,
     staleTime: 30_000,
-  });
-  const triggerRecommendationMutation = useMutation({
-    mutationFn: () => triggerRecommendation(),
   });
   const overviewQuery = useQuery({
     queryKey: ["portfolio-overview"],
@@ -90,8 +88,8 @@ export function DashboardPage() {
             </dl>
           </div>
           <div className="dashboard-workbench-actions">
-            <Button className="dashboard-workbench-button" disabled={triggerRecommendationMutation.isPending} onClick={() => triggerRecommendationMutation.mutate()} type="button">
-              {triggerRecommendationMutation.isPending ? "分析中..." : "AI 分析"}
+            <Button className="dashboard-workbench-button" onClick={() => navigate("/recommendations")} type="button">
+              AI 分析
             </Button>
           </div>
         </CardContent>
@@ -109,7 +107,7 @@ export function DashboardPage() {
           <TableShell className="table-shell">
             <Table>
               <TableHeader>
-                <TableRow>
+                <TableRow className="border-t-0">
                   <TableHead>代码</TableHead>
                   <TableHead>名称</TableHead>
                   <TableHead>最新价</TableHead>

@@ -1,16 +1,24 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Check, Circle, CircleAlert, XIcon } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { formatDateTime, formatPercent } from "../../lib/format";
+import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
 import {
   deleteRecommendation,
   getLatestRecommendation,
+  getRecommendationGenerationProgress,
   getRecommendationAudit,
   listMarkets,
   listRecommendationHistory,
-  triggerRecommendation,
+  startRecommendationGeneration,
 } from "../../lib/tauri";
 import { useAppStore } from "../../store/appStore";
-import type { MarketRow, RecommendationAudit, RecommendationHistoryRow } from "../../lib/types";
+import type {
+  MarketRow,
+  RecommendationAudit,
+  RecommendationGenerationProgressItem,
+  RecommendationHistoryRow,
+  RecommendationRun,
+} from "../../lib/types";
 
 function formatEntryRange(low?: number, high?: number) {
   if (low === undefined && high === undefined) return "无";
@@ -78,6 +86,57 @@ const comparisonColumns: Array<{ key: keyof RecommendationHistoryRow; label: str
   { key: "pnl7d", label: "7天" },
 ];
 
+function summarizeLatestRuns(runs: RecommendationRun[], markets: MarketRow[]) {
+  const groups: Record<"buy" | "sell" | "watch", string[]> = {
+    buy: [],
+    sell: [],
+    watch: [],
+  };
+
+  for (const run of runs) {
+    const name = run.stockName ?? stockName(run.symbol, markets);
+    if (run.hasTrade && run.direction === "买入") {
+      groups.buy.push(name);
+    } else if (run.hasTrade && run.direction === "卖出") {
+      groups.sell.push(name);
+    } else {
+      groups.watch.push(name);
+    }
+  }
+
+  return [
+    `买入：${groups.buy.length > 0 ? groups.buy.join("、") : "无"}`,
+    `卖出：${groups.sell.length > 0 ? groups.sell.join("、") : "无"}`,
+    `观察：${groups.watch.length > 0 ? groups.watch.join("、") : "无"}`,
+  ];
+}
+
+function recommendationProgressMarker(status: RecommendationGenerationProgressItem["status"]) {
+  if (status === "succeeded") return <Check size={14} strokeWidth={2.6} />;
+  if (status === "retrying") return <CircleAlert size={14} strokeWidth={2.4} />;
+  if (status === "failed") return <XIcon size={14} strokeWidth={2.4} />;
+  return <Circle size={11} strokeWidth={2.2} />;
+}
+
+function shortenStockName(value: string) {
+  return Array.from(value).slice(0, 4).join("");
+}
+
+function parseAuditPrompt(snapshot: string) {
+  try {
+    const value = JSON.parse(snapshot) as { system_prompt?: unknown; user_prompt?: unknown };
+    return {
+      systemPrompt: typeof value.system_prompt === "string" ? value.system_prompt : "无",
+      userPrompt: typeof value.user_prompt === "string" ? value.user_prompt : "无",
+    };
+  } catch {
+    return {
+      systemPrompt: "无",
+      userPrompt: "无",
+    };
+  }
+}
+
 export function RecommendationsPage() {
   const queryClient = useQueryClient();
   const openAssistant = useAppStore((state) => state.openAssistant);
@@ -85,6 +144,7 @@ export function RecommendationsPage() {
   const [symbolFilter, setSymbolFilter] = useState("all");
   const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
   const [historyPage, setHistoryPage] = useState(1);
+  const lastProgressStatusRef = useRef<string>("idle");
 
   const latestRecommendationQuery = useQuery({
     queryKey: ["latest-recommendation"],
@@ -110,11 +170,16 @@ export function RecommendationsPage() {
     enabled: selectedAuditId !== null,
     staleTime: 30_000,
   });
+  const recommendationProgressQuery = useQuery({
+    queryKey: ["recommendation-generation-progress"],
+    queryFn: getRecommendationGenerationProgress,
+    refetchInterval: 1_000,
+    staleTime: 0,
+  });
   const triggerRecommendationMutation = useMutation({
-    mutationFn: () => triggerRecommendation(),
+    mutationFn: startRecommendationGeneration,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["latest-recommendation"] });
-      await queryClient.invalidateQueries({ queryKey: ["recommendation-history"] });
+      await queryClient.invalidateQueries({ queryKey: ["recommendation-generation-progress"] });
     },
   });
   const deleteRecommendationMutation = useMutation({
@@ -127,9 +192,9 @@ export function RecommendationsPage() {
   });
 
   const latestRuns = latestRecommendationQuery.data ?? [];
-  const latest = latestRuns[0];
   const history = historyQuery.data ?? [];
   const markets = marketsQuery.data ?? [];
+  const recommendationProgress = recommendationProgressQuery.data;
   const symbolOptions = useMemo(
     () => Array.from(new Set(history.map((row) => row.symbol))).sort(),
     [history],
@@ -156,27 +221,81 @@ export function RecommendationsPage() {
       ? 0
       : filteredHistory.reduce((sum, row) => sum + row.pnl24h, 0) / filteredHistory.length;
   const selectedAudit = auditQuery.data;
+  const latestSummaryLines = useMemo(
+    () => summarizeLatestRuns(latestRuns, markets),
+    [latestRuns, markets],
+  );
+  const progressPercent =
+    recommendationProgress && recommendationProgress.totalCount > 0
+      ? Math.min(
+          100,
+          Math.round((recommendationProgress.completedCount / recommendationProgress.totalCount) * 100),
+        )
+      : 0;
+
+  useEffect(() => {
+    const nextStatus = recommendationProgress?.status ?? "idle";
+    const previousStatus = lastProgressStatusRef.current;
+    if (
+      nextStatus !== previousStatus &&
+      (nextStatus === "completed" || nextStatus === "failed") &&
+      previousStatus === "running"
+    ) {
+      void queryClient.invalidateQueries({ queryKey: ["latest-recommendation"] });
+      void queryClient.invalidateQueries({ queryKey: ["recommendation-history"] });
+    }
+    lastProgressStatusRef.current = nextStatus;
+  }, [recommendationProgress?.status, queryClient]);
 
   return (
     <section className="page-stack">
       <section className="hero-panel recommendation-hero-panel">
-        <div>
-          <span className="section-label">AI投资建议</span>
-          <h2>{latestRuns.length > 0 ? `最新生成 ${latestRuns.length} 条个股建议` : "暂无 AI 建议"}</h2>
-          <p>{latest?.thesis ?? "点击生成 AI 建议，基于自选股行情、K 线、持仓和风控设置生成买入、卖出或观望结论。"}</p>
+        <div className="recommendation-hero-panel__header">
+          <div>
+            <span className="section-label">AI投资建议</span>
+            <h2>{latestRuns.length > 0 ? `最新生成 ${latestRuns.length} 条个股建议` : "暂无 AI 建议"}</h2>
+            <p className="recommendation-summary-text">
+              {latestRuns.length > 0
+                ? latestSummaryLines.join("\n")
+                : "点击生成 AI 建议，基于自选股行情、K 线、持仓和风控设置生成买入、卖出或观望结论。"}
+            </p>
+          </div>
+          <div className="hero-panel__actions recommendation-hero-actions">
+            <button
+              className="sidebar__button"
+              disabled={triggerRecommendationMutation.isPending}
+              onClick={() => triggerRecommendationMutation.mutate()}
+              type="button"
+            >
+              {triggerRecommendationMutation.isPending ? "生成中..." : "生成AI建议"}
+            </button>
+            <button className="ghost-button" onClick={openAssistant} type="button">
+              咨询AI助手
+            </button>
+          </div>
         </div>
-        <div className="hero-panel__actions recommendation-hero-actions">
-          <button
-            className="sidebar__button"
-            disabled={triggerRecommendationMutation.isPending}
-            onClick={() => triggerRecommendationMutation.mutate()}
-            type="button"
+        <div className="financial-progress financial-progress--analysis recommendation-progress" aria-live="polite">
+          <div className="financial-progress__meta">
+            <span>{recommendationProgress?.message ?? "尚未开始 AI 建议生成"}</span>
+            <strong>{progressPercent}%</strong>
+          </div>
+          <div
+            aria-label="AI投资建议进度"
+            className="financial-progress__track"
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={progressPercent}
+            role="progressbar"
           >
-            {triggerRecommendationMutation.isPending ? "生成中..." : "生成AI建议"}
-          </button>
-          <button className="ghost-button" onClick={openAssistant} type="button">
-            咨询AI助手
-          </button>
+            <span style={{ width: `${progressPercent}%` }} />
+          </div>
+          {recommendationProgress && recommendationProgress.items.length > 0 ? (
+            <section className="financial-analysis-status-grid" aria-label="AI投资建议进度">
+              {recommendationProgress.items.map((item) => (
+                <RecommendationStatusChip item={item} key={item.stockCode} />
+              ))}
+            </section>
+          ) : null}
         </div>
       </section>
 
@@ -256,6 +375,7 @@ export function RecommendationsPage() {
                 <th>结果</th>
                 <th>入场</th>
                 <th>止损</th>
+                <th>建议金额</th>
                 <th>置信度</th>
                 <th>风险</th>
                 {comparisonColumns.map((column) => (
@@ -277,6 +397,7 @@ export function RecommendationsPage() {
                   <td className="recommendation-history-table__cell--nowrap">{historyResultLabel(row.result)}</td>
                   <td className="recommendation-history-table__cell--nowrap">{formatEntryRange(row.entryLow, row.entryHigh)}</td>
                   <td className="recommendation-history-table__cell--nowrap">{row.stopLoss ?? "无"}</td>
+                  <td className="recommendation-history-table__cell--nowrap">{row.amountCny != null ? formatCurrency(row.amountCny) : "无"}</td>
                   <td className="recommendation-history-table__cell--nowrap">{row.confidence ?? "无"}</td>
                   <td className="recommendation-history-table__cell--nowrap">{riskLabel(row.risk)}</td>
                   {comparisonColumns.map((column) => {
@@ -321,7 +442,7 @@ export function RecommendationsPage() {
               ))}
               {filteredHistory.length === 0 ? (
                 <tr>
-                  <td className="table-empty-cell" colSpan={17}>
+                  <td className="table-empty-cell" colSpan={18}>
                     暂无符合筛选条件的建议。
                   </td>
                 </tr>
@@ -374,6 +495,7 @@ function AuditDrawer({
   isLoading: boolean;
   onClose: () => void;
 }) {
+  const prompts = audit ? parseAuditPrompt(audit.marketSnapshot) : null;
   return (
     <section aria-modal="true" aria-label="AI 推荐审计详情" className="recommendation-audit-drawer" role="dialog">
       <div className="recommendation-audit-drawer__header">
@@ -417,6 +539,8 @@ function AuditDrawer({
               </div>
             </dl>
             <div className="form-stack">
+              <AuditBlock label="AI 系统提示词" value={prompts?.systemPrompt ?? "无"} />
+              <AuditBlock label="AI 用户提示词" value={prompts?.userPrompt ?? "无"} />
               <AuditBlock label="风控结果" value={audit.riskResult} />
               <AuditBlock label="AI 原始输出" value={audit.aiRawOutput} />
               <AuditBlock label="AI 结构化输出" value={audit.aiStructuredOutput} />
@@ -429,6 +553,20 @@ function AuditDrawer({
         )}
       </div>
     </section>
+  );
+}
+
+function RecommendationStatusChip({ item }: { item: RecommendationGenerationProgressItem }) {
+  return (
+    <article
+      aria-label={`${item.shortName} 建议状态`}
+      className={`financial-analysis-status financial-analysis-status--${item.status}`}
+    >
+      <span aria-hidden="true" className="financial-analysis-status__icon">
+        {recommendationProgressMarker(item.status)}
+      </span>
+      <strong>{shortenStockName(item.shortName)}</strong>
+    </article>
   );
 }
 

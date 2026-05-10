@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantEvent } from "../../lib/assistantTypes";
@@ -269,6 +269,21 @@ describe("Assistant drawer", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("request timed out");
     expect(screen.getByRole("button", { name: "发送" })).toBeInTheDocument();
+  });
+
+  it("resizes from the left drag handle and starts wider than the minimum width", async () => {
+    render(<AssistantDrawer onClose={() => {}} open />);
+
+    const drawer = screen.getByRole("dialog", { name: "AI 助手抽屉" });
+    const handle = screen.getByRole("separator", { name: "调整助手宽度" });
+
+    expect(drawer.style.width).toBe("560px");
+
+    fireEvent.pointerDown(handle, { clientX: 1000, pointerId: 1, buttons: 1 });
+    fireEvent.pointerMove(window, { clientX: 900, pointerId: 1, buttons: 1 });
+    fireEvent.pointerUp(window, { clientX: 900, pointerId: 1 });
+
+    expect(drawer.style.width).toBe("660px");
   });
 });
 

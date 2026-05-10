@@ -185,9 +185,11 @@ pub struct FinancialReportSectionDto {
 #[serde(rename_all = "camelCase")]
 pub struct FinancialReportSnapshotDto {
     pub stock_code: String,
+    pub stock_name: Option<String>,
     pub sections: Vec<FinancialReportSectionDto>,
     pub source_revision: String,
     pub refreshed_at: Option<String>,
+    pub metric_series: Vec<FinancialReportMetricSeriesDto>,
     pub analysis: Option<FinancialReportAnalysisDto>,
 }
 
@@ -214,6 +216,10 @@ pub struct FinancialReportOverviewDto {
 #[serde(rename_all = "camelCase")]
 pub struct FinancialReportAnalysisDto {
     pub stock_code: String,
+    pub stock_name: Option<String>,
+    pub financial_score: u32,
+    pub category_scores: FinancialReportCategoryScoresDto,
+    pub radar_scores: FinancialReportRadarScoresDto,
     pub source_revision: String,
     pub key_summary: String,
     pub positive_factors: String,
@@ -223,6 +229,79 @@ pub struct FinancialReportAnalysisDto {
     pub model_name: Option<String>,
     pub generated_at: String,
     pub stale: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportCategoryScoresDto {
+    pub revenue_quality: u32,
+    pub gross_margin: u32,
+    pub net_profit_return: u32,
+    pub earnings_manipulation: u32,
+    pub solvency: u32,
+    pub cash_flow: u32,
+    pub growth: u32,
+    pub research_capital: u32,
+    pub operating_efficiency: u32,
+    pub asset_quality: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportRadarScoresDto {
+    pub profitability: f64,
+    pub authenticity: f64,
+    pub cash_generation: f64,
+    pub safety: f64,
+    pub growth_potential: f64,
+    pub operating_efficiency: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct AiFinancialReportContextDto {
+    pub key_summary: String,
+    pub positive_factors: String,
+    pub negative_factors: String,
+    pub fraud_risk_points: String,
+    pub radar_scores: FinancialReportRadarScoresDto,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportAnalysisProgressItemDto {
+    pub stock_code: String,
+    pub short_name: String,
+    pub status: String,
+    pub attempt: u32,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportAnalysisProgressDto {
+    pub status: String,
+    pub completed_count: u32,
+    pub total_count: u32,
+    pub message: String,
+    pub items: Vec<FinancialReportAnalysisProgressItemDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportMetricPointDto {
+    pub report_date: String,
+    pub value: f64,
+    pub yoy: Option<f64>,
+    pub qoq: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinancialReportMetricSeriesDto {
+    pub metric_key: String,
+    pub metric_label: String,
+    pub unit: String,
+    pub points: Vec<FinancialReportMetricPointDto>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -327,6 +406,21 @@ pub struct BacktestEquityPointDto {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BacktestOpenPositionDto {
+    pub signal_id: String,
+    pub symbol: String,
+    pub stock_name: Option<String>,
+    pub entry_price: f64,
+    pub entry_at: String,
+    pub mark_price: f64,
+    pub amount_cny: f64,
+    pub holding_periods: u32,
+    pub unrealized_pnl_cny: f64,
+    pub unrealized_pnl_percent: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BacktestSummaryDto {
     pub backtest_id: String,
     pub total_signals: u32,
@@ -337,6 +431,7 @@ pub struct BacktestSummaryDto {
     pub max_drawdown_percent: f64,
     pub profit_factor: Option<f64>,
     pub equity_curve: Vec<BacktestEquityPointDto>,
+    pub open_positions: Vec<BacktestOpenPositionDto>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -763,6 +858,7 @@ pub struct RecommendationHistoryRowDto {
     pub stop_loss: Option<f64>,
     pub take_profit: Option<String>,
     pub leverage: Option<f64>,
+    pub amount_cny: Option<f64>,
     pub confidence_score: f64,
     pub model_name: String,
     pub prompt_version: String,
@@ -794,6 +890,26 @@ pub struct RecommendationAuditDto {
     pub risk_result: String,
     pub market_snapshot: String,
     pub account_snapshot: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendationGenerationProgressItemDto {
+    pub stock_code: String,
+    pub short_name: String,
+    pub status: String,
+    pub attempt: u32,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendationGenerationProgressDto {
+    pub status: String,
+    pub completed_count: u32,
+    pub total_count: u32,
+    pub message: String,
+    pub items: Vec<RecommendationGenerationProgressItemDto>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

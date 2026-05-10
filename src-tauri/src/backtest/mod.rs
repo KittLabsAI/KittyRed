@@ -4,6 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use futures::{stream, StreamExt};
@@ -13,10 +14,12 @@ use time::{Date, Month, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::db::Database;
+use crate::financial_reports::FinancialReportService;
 use crate::market::{akshare, MarketDataService};
 use crate::models::{
     BacktestDatasetDto, BacktestEquityPointDto, BacktestFetchFailureDto, BacktestFetchProgressDto,
-    BacktestRunDto, BacktestSignalDto, BacktestSummaryDto, BacktestTradeDto,
+    BacktestOpenPositionDto, BacktestRunDto, BacktestSignalDto, BacktestSummaryDto,
+    BacktestTradeDto,
     CreateBacktestDatasetRequestDto, CreateBacktestRequestDto, MarketListRow, OhlcvBar,
     RiskDecisionDto, RuntimeSettingsDto,
 };
@@ -25,6 +28,9 @@ use crate::settings::SettingsService;
 
 const DEFAULT_SPREAD_BPS: f64 = 3.0;
 const COST_RATE: f64 = 0.001;
+const BACKTEST_SIGNAL_TIMEOUT_SECS: u64 = 60;
+const BACKTEST_SIGNAL_RETRY_LIMIT: u8 = 3;
+const BACKTEST_INITIAL_CAPITAL_CNY: f64 = 1_000_000.0;
 
 #[derive(Clone)]
 pub struct BacktestService {
@@ -74,6 +80,12 @@ struct FetchOutcome {
     inserted: u32,
     total: u32,
     failures: u32,
+}
+
+#[derive(Clone)]
+struct SampledBar<'a> {
+    captured_at: String,
+    bar: &'a OhlcvBar,
 }
 
 impl BacktestService {
@@ -141,8 +153,15 @@ impl BacktestService {
         let Some(dataset) = self.load_dataset(dataset_id)? else {
             bail!("回测数据集不存在");
         };
+        let estimated_total = planned_snapshot_count(
+            &dataset.start_date,
+            &dataset.end_date,
+            dataset.interval_minutes,
+            dataset.symbols.len(),
+        )?;
 
         self.clear_dataset_fetch_state(dataset_id)?;
+        self.set_dataset_estimated_total(dataset_id, estimated_total)?;
         self.update_dataset_status(dataset_id, "fetching", None, None)?;
         let result = self.fetch_snapshots_inner(&dataset, market_data_service, runtime, &cancel);
         match result {
@@ -290,8 +309,14 @@ impl BacktestService {
         backtest_id: &str,
         settings_service: &SettingsService,
         market_data_service: &MarketDataService,
+        financial_report_service: &FinancialReportService,
     ) -> anyhow::Result<()> {
-        self.generate_signals(backtest_id, settings_service, market_data_service)
+        self.generate_signals(
+            backtest_id,
+            settings_service,
+            market_data_service,
+            financial_report_service,
+        )
             .await?;
         self.replay_trades(backtest_id).await
     }
@@ -301,6 +326,7 @@ impl BacktestService {
         backtest_id: &str,
         settings_service: &SettingsService,
         market_data_service: &MarketDataService,
+        financial_report_service: &FinancialReportService,
     ) -> anyhow::Result<()> {
         let cancel = self.cancel_flag(backtest_id);
         cancel.store(false, Ordering::SeqCst);
@@ -316,6 +342,7 @@ impl BacktestService {
                 &runtime,
                 settings_service,
                 market_data_service,
+                financial_report_service,
                 cancel.clone(),
             )
             .await;
@@ -422,12 +449,6 @@ impl BacktestService {
             .load_run(backtest_id)?
             .ok_or_else(|| anyhow!("回测不存在"))?;
         let trades = self.list_trades(backtest_id)?;
-        let win_rate = if trades.is_empty() {
-            0.0
-        } else {
-            trades.iter().filter(|trade| trade.pnl_cny > 0.0).count() as f64 / trades.len() as f64
-                * 100.0
-        };
         let equity_curve = match self.load_equity_curve(backtest_id)? {
             curve if !curve.is_empty() => curve,
             _ => {
@@ -439,17 +460,34 @@ impl BacktestService {
                 }
             }
         };
+        let open_positions = self.load_open_positions(backtest_id, &run.dataset_id)?;
+        let trade_count = trades.len() as u32 * 2 + open_positions.len() as u32;
+        let winning_trade_actions = trades
+            .iter()
+            .filter(|trade| trade.pnl_cny > 0.0)
+            .count() as u32
+            * 2
+            + open_positions
+                .iter()
+                .filter(|position| position.unrealized_pnl_cny > 0.0)
+                .count() as u32;
+        let win_rate = if trade_count == 0 {
+            0.0
+        } else {
+            winning_trade_actions as f64 / trade_count as f64 * 100.0
+        };
 
         Ok(BacktestSummaryDto {
             backtest_id: backtest_id.to_string(),
             total_signals: run.total_signals,
-            trade_count: trades.len() as u32,
+            trade_count,
             win_rate: round2(win_rate),
             total_pnl_cny: run.total_pnl_cny,
             total_pnl_percent: run.total_pnl_percent,
             max_drawdown_percent: run.max_drawdown_percent,
             profit_factor: run.profit_factor,
             equity_curve,
+            open_positions,
         })
     }
 
@@ -582,16 +620,17 @@ impl BacktestService {
                     "spread_bps_source": "snapshot"
                 })
             });
-            for (index, bar) in selected.iter().enumerate() {
+            for (index, sampled) in selected.iter().enumerate() {
                 if cancel.load(Ordering::SeqCst) {
                     bail!("数据拉取已取消");
                 }
-                let captured_at = normalize_bar_time(&bar.open_time);
+                let bar = sampled.bar;
+                let captured_at = sampled.captured_at.as_str();
                 if bar.close <= 0.0 || bar.high <= 0.0 || bar.low <= 0.0 {
                     failures += self.insert_fetch_failure(
                         &dataset.dataset_id,
                         symbol,
-                        Some(&captured_at),
+                        Some(captured_at),
                         "snapshot",
                         "validate_bar",
                         &format!("{} {} 价格数据无效", symbol, captured_at),
@@ -603,7 +642,7 @@ impl BacktestService {
                 let previous = selected
                     .get(index.saturating_sub(48))
                     .filter(|_| index >= 48)
-                    .map(|item| item.close)
+                    .map(|item| item.bar.close)
                     .unwrap_or(bar.open);
                 let change_24h = if previous.abs() > f64::EPSILON {
                     (bar.close - previous) / previous * 100.0
@@ -614,7 +653,7 @@ impl BacktestService {
                     .iter()
                     .skip(index.saturating_sub(48))
                     .take(index.saturating_sub(index.saturating_sub(48)) + 1)
-                    .map(|item| item.volume)
+                    .map(|item| item.bar.volume)
                     .sum::<f64>();
                 let kline_data = context_bars
                     .iter()
@@ -643,7 +682,7 @@ impl BacktestService {
                     dataset,
                     symbol,
                     Some(stock_name.as_str()),
-                    &captured_at,
+                    captured_at,
                     bar,
                     change_24h,
                     volume_24h,
@@ -665,7 +704,7 @@ impl BacktestService {
                         failures += self.insert_fetch_failure(
                             &dataset.dataset_id,
                             symbol,
-                            Some(&captured_at),
+                            Some(captured_at),
                             "snapshot",
                             "insert_snapshot",
                             &format!("{} {} 快照写入失败", symbol, captured_at),
@@ -695,6 +734,7 @@ impl BacktestService {
         runtime: &RuntimeSettingsDto,
         settings_service: &SettingsService,
         _market_data_service: &MarketDataService,
+        financial_report_service: &FinancialReportService,
         cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<()> {
         let snapshots = self.load_snapshots(&run.dataset_id)?;
@@ -719,19 +759,34 @@ impl BacktestService {
                     bail!("回测已取消");
                 }
                 let row = market_row_from_snapshot(&snapshot);
-                let plan = llm::generate_trade_plan_with_historical_context(
-                    &settings_service,
-                    &row,
-                    &[row.clone()],
-                    1_000_000.0,
-                    None::<&PositionContext>,
-                    serde_json::from_str(&snapshot.stock_info)
-                        .unwrap_or_else(|_| serde_json::json!({})),
-                    snapshot
-                        .bid_ask_json
-                        .as_deref()
-                        .and_then(|value| serde_json::from_str(value).ok()),
-                    snapshot_kline_map(&snapshot),
+                let financial_report_analysis = backtest_financial_context(
+                    financial_report_service,
+                    runtime,
+                    &snapshot.symbol,
+                );
+                let stock_info = serde_json::from_str(&snapshot.stock_info)
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                let bid_ask = snapshot
+                    .bid_ask_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str(value).ok());
+                let kline_map = snapshot_kline_map(&snapshot);
+                let plan = complete_backtest_signal_with_retry(
+                    Duration::from_secs(BACKTEST_SIGNAL_TIMEOUT_SECS),
+                    || async {
+                        llm::generate_trade_plan_with_historical_context(
+                            &settings_service,
+                            &row,
+                            &[row.clone()],
+                            1_000_000.0,
+                            None::<&PositionContext>,
+                            financial_report_analysis.clone(),
+                            stock_info.clone(),
+                            bid_ask.clone(),
+                            kline_map.clone(),
+                        )
+                        .await
+                    },
                 )
                 .await
                 .map_err(|error| error.to_string());
@@ -757,7 +812,7 @@ impl BacktestService {
                         &plan.ai_raw_output,
                         &plan.ai_structured_output,
                         if plan.run.has_trade {
-                            "opened"
+                            "generated"
                         } else {
                             "no_trade"
                         },
@@ -824,6 +879,10 @@ impl BacktestService {
         let mut positions: Vec<VirtualPosition> = Vec::new();
         let mut trades: Vec<BacktestTradeDto> = Vec::new();
         let mut equity_curve: Vec<BacktestEquityPointDto> = Vec::new();
+        let mut latest_snapshots_by_symbol: HashMap<String, BacktestSnapshot> = HashMap::new();
+        let mut cash_cny = BACKTEST_INITIAL_CAPITAL_CNY;
+        let mut latest_total_pnl_cny = 0.0;
+        let mut latest_total_pnl_percent = 0.0;
         for (index, (captured_at, items)) in grouped.iter().enumerate() {
             if cancel.load(Ordering::SeqCst) {
                 bail!("回测已取消");
@@ -833,6 +892,11 @@ impl BacktestService {
                 .iter()
                 .map(|snapshot| (snapshot.symbol.clone(), snapshot))
                 .collect::<HashMap<_, _>>();
+            latest_snapshots_by_symbol.extend(
+                items.iter()
+                    .cloned()
+                    .map(|snapshot| (snapshot.symbol.clone(), snapshot)),
+            );
             let mut remaining = Vec::new();
             for mut position in positions {
                 position.holding_periods += 1;
@@ -845,6 +909,7 @@ impl BacktestService {
                     {
                         trade.backtest_id = run.backtest_id.clone();
                         self.insert_trade(&trade)?;
+                        cash_cny += position.amount_cny + trade.pnl_cny;
                         trades.push(trade);
                         continue;
                     }
@@ -867,21 +932,37 @@ impl BacktestService {
                     continue;
                 };
                 if let Some(position) = open_position_from_signal(signal, snapshot) {
+                    if position.amount_cny > cash_cny {
+                        self.update_signal_result(
+                            &run.backtest_id,
+                            &signal.signal_id,
+                            "insufficient_funds",
+                        )?;
+                        continue;
+                    }
+                    cash_cny -= position.amount_cny;
+                    self.update_signal_result(&run.backtest_id, &signal.signal_id, "opened")?;
                     positions.push(position);
                 }
             }
 
-            let realized: f64 = trades.iter().map(|t| t.pnl_percent).sum();
-            let unrealized: f64 = positions
+            let market_value_cny: f64 = positions
                 .iter()
                 .filter_map(|p| {
-                    let snapshot = current_by_symbol.get(&p.symbol)?;
-                    Some(((snapshot.last_price - p.entry_price) / p.entry_price) * 100.0)
+                    let snapshot = current_by_symbol
+                        .get(&p.symbol)
+                        .copied()
+                        .or_else(|| latest_snapshots_by_symbol.get(&p.symbol))?;
+                    Some(position_market_value_cny(p, snapshot.last_price))
                 })
                 .sum();
+            let total_equity_cny: f64 = cash_cny + market_value_cny;
+            latest_total_pnl_cny = total_equity_cny - BACKTEST_INITIAL_CAPITAL_CNY;
+            latest_total_pnl_percent =
+                latest_total_pnl_cny / BACKTEST_INITIAL_CAPITAL_CNY * 100.0;
             equity_curve.push(BacktestEquityPointDto {
                 captured_at: captured_at.clone(),
-                cumulative_pnl_percent: round2(realized + unrealized),
+                cumulative_pnl_percent: round2(latest_total_pnl_percent),
             });
 
             self.set_run_progress(
@@ -889,35 +970,20 @@ impl BacktestService {
                 index as u32 + 1,
                 positions.len() as u32,
                 &trades,
+                latest_total_pnl_cny,
+                latest_total_pnl_percent,
             )?;
         }
 
-        if let Some((captured_at, items)) = grouped.iter().next_back() {
-            let by_symbol = items
-                .iter()
-                .map(|snapshot| (snapshot.symbol.clone(), snapshot))
-                .collect::<HashMap<_, _>>();
-            for position in positions {
-                if let Some(snapshot) = by_symbol.get(&position.symbol) {
-                    let mut trade =
-                        close_position(&position, snapshot.last_price, captured_at, "backtest_end");
-                    trade.backtest_id = run.backtest_id.clone();
-                    self.insert_trade(&trade)?;
-                    trades.push(trade);
-                }
-            }
-        }
-
-        if let Some((captured_at, _)) = grouped.iter().next_back() {
-            let realized: f64 = trades.iter().map(|t| t.pnl_percent).sum();
-            equity_curve.push(BacktestEquityPointDto {
-                captured_at: captured_at.clone(),
-                cumulative_pnl_percent: round2(realized),
-            });
-        }
-
         self.insert_equity_curve(&run.backtest_id, &equity_curve)?;
-        self.complete_run(&run.backtest_id, &trades, &equity_curve)
+        self.complete_run(
+            &run.backtest_id,
+            &trades,
+            &equity_curve,
+            positions.len() as u32,
+            latest_total_pnl_cny,
+            latest_total_pnl_percent,
+        )
     }
 
     fn cancel_flag(&self, id: &str) -> Arc<AtomicBool> {
@@ -1090,8 +1156,21 @@ impl BacktestService {
             .connection()
             .execute(
                 "UPDATE backtest_datasets
-                 SET total_snapshots = ?2,
-                     estimated_llm_calls = ?2
+                 SET total_snapshots = ?2
+                 WHERE dataset_id = ?1",
+                params![dataset_id, total],
+            )?;
+        Ok(())
+    }
+
+    fn set_dataset_estimated_total(&self, dataset_id: &str, total: u32) -> anyhow::Result<()> {
+        self.db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "UPDATE backtest_datasets
+                 SET estimated_llm_calls = ?2
                  WHERE dataset_id = ?1",
                 params![dataset_id, total],
             )?;
@@ -1126,7 +1205,7 @@ impl BacktestService {
         symbol: &str,
         interval: &str,
         count: usize,
-        selected: &[&OhlcvBar],
+        selected: &[SampledBar<'_>],
         load_bars: &mut F,
         failures: &mut u32,
     ) -> anyhow::Result<Vec<OhlcvBar>>
@@ -1138,7 +1217,7 @@ impl BacktestService {
             Err(error) => {
                 let timepoints = selected
                     .iter()
-                    .map(|bar| normalize_bar_time(&bar.open_time))
+                    .map(|item| item.captured_at.clone())
                     .collect::<Vec<_>>();
                 *failures += self.record_failures_for_timepoints(
                     dataset_id,
@@ -1329,12 +1408,12 @@ impl BacktestService {
         processed: u32,
         open_trades: u32,
         trades: &[BacktestTradeDto],
+        total_pnl_cny: f64,
+        total_pnl_percent: f64,
     ) -> anyhow::Result<()> {
         let win = trades.iter().filter(|trade| trade.pnl_cny > 0.0).count() as u32;
         let loss = trades.iter().filter(|trade| trade.pnl_cny < 0.0).count() as u32;
         let flat = trades.len() as u32 - win - loss;
-        let total_pnl_cny = trades.iter().map(|trade| trade.pnl_cny).sum::<f64>();
-        let total_pnl_percent = trades.iter().map(|trade| trade.pnl_percent).sum::<f64>();
         self.db
             .lock()
             .expect("backtest db lock poisoned")
@@ -1426,6 +1505,15 @@ impl BacktestService {
             params![backtest_id],
         )?;
         db.connection().execute(
+            "UPDATE backtest_signals
+             SET result = CASE
+               WHEN has_trade = 1 THEN 'generated'
+               ELSE result
+             END
+             WHERE backtest_id = ?1",
+            params![backtest_id],
+        )?;
+        db.connection().execute(
             "UPDATE backtest_runs
              SET processed_timepoints = 0,
                  open_trades = 0,
@@ -1441,6 +1529,23 @@ impl BacktestService {
              WHERE backtest_id = ?1",
             params![backtest_id],
         )?;
+        Ok(())
+    }
+
+    fn update_signal_result(
+        &self,
+        backtest_id: &str,
+        signal_id: &str,
+        result: &str,
+    ) -> anyhow::Result<()> {
+        self.db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "UPDATE backtest_signals SET result = ?3 WHERE backtest_id = ?1 AND signal_id = ?2",
+                params![backtest_id, signal_id, result],
+            )?;
         Ok(())
     }
 
@@ -1575,9 +1680,82 @@ impl BacktestService {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    fn complete_run(&self, backtest_id: &str, trades: &[BacktestTradeDto], equity_curve: &[BacktestEquityPointDto]) -> anyhow::Result<()> {
-        let total_pnl_cny = trades.iter().map(|trade| trade.pnl_cny).sum::<f64>();
-        let total_pnl_percent = trades.iter().map(|trade| trade.pnl_percent).sum::<f64>();
+    fn load_open_positions(
+        &self,
+        backtest_id: &str,
+        dataset_id: &str,
+    ) -> anyhow::Result<Vec<BacktestOpenPositionDto>> {
+        let signals = self.list_signals(backtest_id)?;
+        let trades = self.list_trades(backtest_id)?;
+        let closed_signal_ids = trades
+            .iter()
+            .filter_map(|trade| trade.signal_id.clone())
+            .collect::<HashSet<_>>();
+        let snapshots = self.load_snapshots(dataset_id)?;
+        let snapshots_by_symbol =
+            snapshots
+                .into_iter()
+                .fold(HashMap::<String, Vec<BacktestSnapshot>>::new(), |mut map, snapshot| {
+                    map.entry(snapshot.symbol.clone())
+                        .or_default()
+                        .push(snapshot);
+                    map
+                });
+
+        Ok(signals
+            .into_iter()
+            .filter(|signal| {
+                signal.has_trade
+                    && signal.direction.as_deref() == Some("买入")
+                    && signal.result == "opened"
+            })
+            .filter(|signal| !closed_signal_ids.contains(&signal.signal_id))
+            .filter_map(|signal| {
+                let symbol_snapshots = snapshots_by_symbol.get(&signal.symbol)?;
+                let entry_at = signal.captured_at.clone();
+                let latest = symbol_snapshots
+                    .iter()
+                    .rev()
+                    .find(|snapshot| snapshot.captured_at >= entry_at)?;
+                let entry_price = match (signal.entry_low, signal.entry_high) {
+                    (Some(low), Some(high)) => (low + high) / 2.0,
+                    (Some(value), None) | (None, Some(value)) => value,
+                    _ => latest.last_price,
+                };
+                let amount_cny = signal.amount_cny.unwrap_or(10_000.0);
+                let quantity = amount_cny / entry_price.max(0.01);
+                let unrealized_pnl_cny = (latest.last_price - entry_price) * quantity;
+                let unrealized_pnl_percent =
+                    ((latest.last_price - entry_price) / entry_price.max(0.01)) * 100.0;
+
+                Some(BacktestOpenPositionDto {
+                    signal_id: signal.signal_id,
+                    symbol: signal.symbol,
+                    stock_name: signal.stock_name.or_else(|| latest.stock_name.clone()),
+                    entry_price: round4(entry_price),
+                    entry_at: entry_at.clone(),
+                    mark_price: round4(latest.last_price),
+                    amount_cny: round2(amount_cny),
+                    holding_periods: symbol_snapshots
+                        .iter()
+                        .filter(|snapshot| snapshot.captured_at > entry_at)
+                        .count() as u32,
+                    unrealized_pnl_cny: round2(unrealized_pnl_cny),
+                    unrealized_pnl_percent: round2(unrealized_pnl_percent),
+                })
+            })
+            .collect())
+    }
+
+    fn complete_run(
+        &self,
+        backtest_id: &str,
+        trades: &[BacktestTradeDto],
+        equity_curve: &[BacktestEquityPointDto],
+        open_trades: u32,
+        total_pnl_cny: f64,
+        total_pnl_percent: f64,
+    ) -> anyhow::Result<()> {
         let win = trades.iter().filter(|trade| trade.pnl_cny > 0.0).count() as u32;
         let loss = trades.iter().filter(|trade| trade.pnl_cny < 0.0).count() as u32;
         let flat = trades.len() as u32 - win - loss;
@@ -1599,18 +1777,19 @@ impl BacktestService {
             .execute(
                 "UPDATE backtest_runs
              SET status = 'completed',
-                 open_trades = 0,
-                 win_count = ?2,
-                 loss_count = ?3,
-                 flat_count = ?4,
-                 total_pnl_cny = ?5,
-                 total_pnl_percent = ?6,
-                 max_drawdown_percent = ?7,
-                 profit_factor = ?8,
-                 completed_at = ?9
+                 open_trades = ?2,
+                 win_count = ?3,
+                 loss_count = ?4,
+                 flat_count = ?5,
+                 total_pnl_cny = ?6,
+                 total_pnl_percent = ?7,
+                 max_drawdown_percent = ?8,
+                 profit_factor = ?9,
+                 completed_at = ?10
              WHERE backtest_id = ?1",
                 params![
                     backtest_id,
+                    open_trades,
                     win,
                     loss,
                     flat,
@@ -1753,16 +1932,73 @@ fn sampled_bars<'a>(
     start_date: &str,
     end_date: &str,
     interval_minutes: u32,
-) -> Vec<&'a OhlcvBar> {
-    bars.iter()
+) -> Vec<SampledBar<'a>> {
+    let targets = expected_timepoints(start_date, end_date, interval_minutes).unwrap_or_default();
+    sampled_bars_with_targets(bars, start_date, end_date, &targets)
+}
+
+fn sampled_bars_with_targets<'a>(
+    bars: &'a [OhlcvBar],
+    start_date: &str,
+    end_date: &str,
+    targets: &[String],
+) -> Vec<SampledBar<'a>> {
+    let filtered = bars
+        .iter()
         .filter(|bar| {
-            let date = bar.open_time.get(0..10).unwrap_or("");
-            date >= start_date && date <= end_date && is_a_share_session(&bar.open_time)
+            let normalized = normalize_bar_time(&bar.open_time);
+            let date = normalized.get(0..10).unwrap_or("");
+            date >= start_date && date <= end_date && is_a_share_session(&normalized)
         })
-        .enumerate()
-        .filter(|(index, _)| *index % (interval_minutes / 5).max(1) as usize == 0)
-        .map(|(_, bar)| bar)
-        .collect()
+        .collect::<Vec<_>>();
+
+    let mut selected = Vec::new();
+    let mut last_selected_time = String::new();
+    for target in targets {
+        let target_date = target.get(0..10).unwrap_or("");
+        let matched = filtered
+            .iter()
+            .rev()
+            .find(|bar| {
+                let normalized = normalize_bar_time(&bar.open_time);
+                let date = normalized.get(0..10).unwrap_or("");
+                date == target_date
+                    && normalized.as_str() <= target.as_str()
+                    && normalized > last_selected_time
+            })
+            .copied()
+            .or_else(|| {
+                filtered.iter().find(|bar| {
+                    let normalized = normalize_bar_time(&bar.open_time);
+                    let date = normalized.get(0..10).unwrap_or("");
+                    date == target_date
+                        && normalized.as_str() >= target.as_str()
+                        && normalized > last_selected_time
+                }).copied()
+            });
+        if let Some(bar) = matched {
+            last_selected_time = normalize_bar_time(&bar.open_time);
+            selected.push(SampledBar {
+                captured_at: target.clone(),
+                bar,
+            });
+        }
+    }
+    selected
+}
+
+fn append_session_timepoints(
+    output: &mut Vec<String>,
+    date: &str,
+    start_time: &str,
+    end_time: &str,
+    step_minutes: i64,
+) {
+    push_session_timepoints(output, date, start_time, end_time, step_minutes);
+    let session_end = format!("{date}T{end_time}:00+08:00");
+    if output.last() != Some(&session_end) {
+        output.push(session_end);
+    }
 }
 
 fn expected_timepoints(
@@ -1770,14 +2006,28 @@ fn expected_timepoints(
     end_date: &str,
     interval_minutes: u32,
 ) -> anyhow::Result<Vec<String>> {
+    expected_timepoints_with_trade_day_filter(start_date, end_date, interval_minutes, |date| {
+        is_trade_day(date)
+    })
+}
+
+fn expected_timepoints_with_trade_day_filter<F>(
+    start_date: &str,
+    end_date: &str,
+    interval_minutes: u32,
+    mut is_trade_day_fn: F,
+) -> anyhow::Result<Vec<String>>
+where
+    F: FnMut(Date) -> bool,
+{
     let mut date = parse_date(start_date)?;
     let end = parse_date(end_date)?;
     let mut timepoints = Vec::new();
     let step = interval_minutes.max(5) as i64;
     while date <= end {
-        if date.weekday().number_from_monday() <= 5 {
-            push_session_timepoints(&mut timepoints, &date.to_string(), "09:30", "11:30", step);
-            push_session_timepoints(&mut timepoints, &date.to_string(), "13:00", "15:00", step);
+        if is_trade_day_fn(date) {
+            append_session_timepoints(&mut timepoints, &date.to_string(), "09:30", "11:30", step);
+            append_session_timepoints(&mut timepoints, &date.to_string(), "13:00", "15:00", step);
         }
         date = date.next_day().ok_or_else(|| anyhow!("日期范围过大"))?;
     }
@@ -2110,6 +2360,44 @@ fn close_position(
     }
 }
 
+fn round4(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0
+}
+
+fn position_market_value_cny(position: &VirtualPosition, mark_price: f64) -> f64 {
+    let quantity = position.amount_cny / position.entry_price.max(0.01);
+    quantity * mark_price
+}
+
+async fn complete_backtest_signal_with_retry<F, Fut>(
+    timeout_duration: Duration,
+    mut runner: F,
+) -> anyhow::Result<llm::GeneratedTradePlan>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<llm::GeneratedTradePlan>>,
+{
+    let mut last_error = String::new();
+    for attempt in 1..=BACKTEST_SIGNAL_RETRY_LIMIT {
+        match tokio::time::timeout(timeout_duration, runner()).await {
+            Ok(Ok(plan)) => return Ok(plan),
+            Ok(Err(error)) => {
+                last_error = format!("第 {attempt} 次尝试失败：{error}");
+            }
+            Err(_) => {
+                last_error = format!(
+                    "第 {attempt} 次尝试失败：调用模型超时（>{}秒）",
+                    timeout_duration.as_secs()
+                );
+            }
+        }
+        if attempt < BACKTEST_SIGNAL_RETRY_LIMIT {
+            continue;
+        }
+    }
+    bail!("AI 信号生成失败（已重试 {BACKTEST_SIGNAL_RETRY_LIMIT} 次）：{last_error}")
+}
+
 fn first_price(value: &str) -> Option<f64> {
     value
         .split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
@@ -2132,21 +2420,35 @@ fn planned_snapshot_count(
 }
 
 fn trading_day_count(start_date: &str, end_date: &str) -> anyhow::Result<u32> {
+    trading_day_count_with_filter(start_date, end_date, |date| is_trade_day(date))
+}
+
+fn trading_day_count_with_filter<F>(
+    start_date: &str,
+    end_date: &str,
+    mut is_trade_day_fn: F,
+) -> anyhow::Result<u32>
+where
+    F: FnMut(Date) -> bool,
+{
     let mut date = parse_date(start_date)?;
     let end = parse_date(end_date)?;
     let mut count = 0;
     while date <= end {
-        let date_string = date.to_string();
-        let is_trade_day = akshare::is_trade_date(&date_string).unwrap_or_else(|_| {
-            let weekday = date.weekday().number_from_monday();
-            weekday <= 5
-        });
-        if is_trade_day {
+        if is_trade_day_fn(date) {
             count += 1;
         }
         date = date.next_day().ok_or_else(|| anyhow!("日期范围过大"))?;
     }
     Ok(count)
+}
+
+fn is_trade_day(date: Date) -> bool {
+    let date_string = date.to_string();
+    akshare::is_trade_date(&date_string).unwrap_or_else(|_| {
+        let weekday = date.weekday().number_from_monday();
+        weekday <= 5
+    })
 }
 
 fn parse_date(value: &str) -> anyhow::Result<Date> {
@@ -2244,6 +2546,20 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
+fn backtest_financial_context(
+    financial_report_service: &FinancialReportService,
+    runtime: &RuntimeSettingsDto,
+    stock_code: &str,
+) -> Option<crate::models::AiFinancialReportContextDto> {
+    if !runtime.use_financial_report_data {
+        return None;
+    }
+    financial_report_service
+        .shared_ai_financial_context(stock_code)
+        .ok()
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2294,6 +2610,56 @@ mod tests {
         crate::settings::SettingsService::new(path).get_runtime_settings()
     }
 
+    fn financial_report_service_with_analysis() -> FinancialReportService {
+        let path =
+            std::env::temp_dir().join(format!("kittyred-financial-{}.sqlite", Uuid::new_v4()));
+        let service = FinancialReportService::new(path).expect("financial report service should open");
+        service
+            .seed_test_analysis("SHSE.600000")
+            .expect("analysis should seed");
+        service
+    }
+
+    fn generated_trade_plan() -> llm::GeneratedTradePlan {
+        llm::GeneratedTradePlan {
+            run: crate::models::RecommendationRunDto {
+                recommendation_id: format!("rec-{}", Uuid::new_v4()),
+                status: "completed".into(),
+                trigger_type: "backtest".into(),
+                has_trade: false,
+                symbol: Some("SHSE.600000".into()),
+                stock_name: Some("浦发银行".into()),
+                direction: None,
+                market_type: "ashare".into(),
+                exchanges: vec!["akshare:xueqiu".into()],
+                confidence_score: 0.0,
+                rationale: "测试".into(),
+                symbol_recommendations: Vec::new(),
+                risk_status: "watch".into(),
+                entry_low: None,
+                entry_high: None,
+                stop_loss: None,
+                take_profit: None,
+                leverage: None,
+                amount_cny: None,
+                invalidation: None,
+                max_loss_cny: None,
+                no_trade_reason: Some("测试".into()),
+                risk_details: RiskDecisionDto::default(),
+                data_snapshot_at: "2026-05-06T09:30:00+08:00".into(),
+                model_provider: "OpenAI-compatible".into(),
+                model_name: "gpt-test".into(),
+                prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+                user_preference_version: "test".into(),
+                generated_at: now_rfc3339(),
+            },
+            ai_raw_output: "{}".into(),
+            ai_structured_output: "{}".into(),
+            system_prompt: "system".into(),
+            user_prompt: "user".into(),
+        }
+    }
+
     #[test]
     fn fetch_records_failed_timepoint_and_continues_same_symbol() {
         let service = test_service();
@@ -2331,7 +2697,7 @@ mod tests {
         assert_eq!(failures[0].symbol, "SHSE.600000");
         assert_eq!(
             failures[0].captured_at.as_deref(),
-            Some("2026-05-06T10:00:00+08:00")
+            Some("2026-05-06T09:35:00+08:00")
         );
     }
 
@@ -2360,6 +2726,45 @@ mod tests {
                 .len()
                 > 0
         );
+    }
+
+    #[tokio::test]
+    async fn backtest_signal_retries_three_times_before_failure() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_runner = attempts.clone();
+
+        let error = complete_backtest_signal_with_retry(Duration::from_millis(20), move || {
+            let attempts_for_runner = attempts_for_runner.clone();
+            async move {
+                attempts_for_runner.fetch_add(1, Ordering::SeqCst);
+                bail!("模型繁忙");
+            }
+        })
+        .await
+        .expect_err("runner should fail after retries");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(error.to_string().contains("已重试 3 次"));
+    }
+
+    #[tokio::test]
+    async fn backtest_signal_timeout_retries_three_times_before_failure() {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_runner = attempts.clone();
+
+        let error = complete_backtest_signal_with_retry(Duration::from_millis(1), move || {
+            let attempts_for_runner = attempts_for_runner.clone();
+            async move {
+                attempts_for_runner.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Ok(generated_trade_plan())
+            }
+        })
+        .await
+        .expect_err("runner should timeout after retries");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert!(error.to_string().contains("调用模型超时"));
     }
 
     #[test]
@@ -2456,7 +2861,7 @@ mod tests {
         }
         let equity_curve = vec![];
         service
-            .complete_run(&backtest_id, &trades, &equity_curve)
+            .complete_run(&backtest_id, &trades, &equity_curve, 0, 150.0, 1.5)
             .expect("run should complete");
 
         let summary = service.summary(&backtest_id).expect("summary should load");
@@ -2482,5 +2887,893 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0.0, 1.5, 1.5]
         );
+    }
+
+    #[tokio::test]
+    async fn replay_keeps_open_positions_without_forced_backtest_end_close() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000"]);
+        for (captured_at, price) in [
+            ("2026-05-06T09:30:00+08:00", 8.7),
+            ("2026-05-07T10:00:00+08:00", 8.9),
+        ] {
+            service
+                .insert_snapshot(
+                    &dataset,
+                    "SHSE.600000",
+                    Some("浦发银行"),
+                    captured_at,
+                    &bar(&captured_at.replace('T', " ").replace("+08:00", ""), price),
+                    0.0,
+                    1000.0,
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "{}".into(),
+                    None,
+                    "{}".into(),
+                )
+                .expect("snapshot should insert");
+        }
+
+        let backtest_id = format!("bt-{}", Uuid::new_v4());
+        service
+            .db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "INSERT INTO backtest_runs (
+                  backtest_id, dataset_id, name, status, model_provider, model_name,
+                  prompt_version, risk_settings_json, max_holding_days, created_at
+                ) VALUES (?1, ?2, '测试回测', 'signals_ready', 'OpenAI-compatible', 'gpt-test', ?3, '{}', 7, ?4)",
+                params![
+                    backtest_id,
+                    dataset.dataset_id,
+                    RECOMMENDATION_PROMPT_VERSION,
+                    now_rfc3339()
+                ],
+            )
+            .expect("run should insert");
+
+        let snapshot = service
+            .load_snapshots(&dataset.dataset_id)
+            .expect("snapshots should load")
+            .into_iter()
+            .find(|item| item.captured_at == "2026-05-06T09:30:00+08:00")
+            .expect("first snapshot should exist");
+        let signal_run = crate::models::RecommendationRunDto {
+            recommendation_id: format!("rec-{}", Uuid::new_v4()),
+            status: "completed".into(),
+            trigger_type: "backtest".into(),
+            has_trade: true,
+            symbol: Some("SHSE.600000".into()),
+            stock_name: Some("浦发银行".into()),
+            direction: Some("买入".into()),
+            market_type: "ashare".into(),
+            exchanges: vec!["akshare:xueqiu".into()],
+            confidence_score: 70.0,
+            rationale: "测试开仓".into(),
+            symbol_recommendations: Vec::new(),
+            risk_status: "approved".into(),
+            entry_low: Some(8.7),
+            entry_high: Some(8.7),
+            stop_loss: None,
+            take_profit: None,
+            leverage: None,
+            amount_cny: Some(10_000.0),
+            invalidation: None,
+            max_loss_cny: None,
+            no_trade_reason: None,
+            risk_details: RiskDecisionDto::default(),
+            data_snapshot_at: snapshot.captured_at.clone(),
+            model_provider: "OpenAI-compatible".into(),
+            model_name: "gpt-test".into(),
+            prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+            user_preference_version: "test".into(),
+            generated_at: now_rfc3339(),
+        };
+        service
+            .insert_signal(
+                &backtest_id,
+                "sig-1",
+                &snapshot,
+                &signal_run,
+                "{}",
+                "{}",
+                "opened",
+            )
+            .expect("signal should insert");
+
+        let run = service
+            .load_run(&backtest_id)
+            .expect("run should load")
+            .expect("run should exist");
+        let cancel = AtomicBool::new(false);
+        service
+            .replay_trades_inner(&run, &cancel)
+            .await
+            .expect("replay should succeed");
+
+        let trades = service.list_trades(&backtest_id).expect("trades should load");
+        assert!(trades.is_empty());
+
+        let summary = service.summary(&backtest_id).expect("summary should load");
+        assert_eq!(summary.trade_count, 1);
+        assert_eq!(summary.open_positions.len(), 1);
+        assert_eq!(summary.open_positions[0].symbol, "SHSE.600000");
+        assert!(summary.open_positions[0].unrealized_pnl_percent > 0.0);
+    }
+
+    #[test]
+    fn summary_ignores_generated_signals_before_replay() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000"]);
+        for (captured_at, price) in [
+            ("2026-05-06T09:30:00+08:00", 10.0),
+            ("2026-05-07T09:30:00+08:00", 11.0),
+        ] {
+            service
+                .insert_snapshot(
+                    &dataset,
+                    "SHSE.600000",
+                    Some("浦发银行"),
+                    captured_at,
+                    &bar(&captured_at.replace('T', " ").replace("+08:00", ""), price),
+                    0.0,
+                    1000.0,
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "{}".into(),
+                    None,
+                    "{}".into(),
+                )
+                .expect("snapshot should insert");
+        }
+
+        let backtest_id = format!("bt-{}", Uuid::new_v4());
+        service
+            .db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "INSERT INTO backtest_runs (
+                  backtest_id, dataset_id, name, status, model_provider, model_name,
+                  prompt_version, risk_settings_json, max_holding_days, created_at
+                ) VALUES (?1, ?2, '测试回测', 'signals_ready', 'OpenAI-compatible', 'gpt-test', ?3, '{}', 7, ?4)",
+                params![backtest_id, dataset.dataset_id, RECOMMENDATION_PROMPT_VERSION, now_rfc3339()],
+            )
+            .expect("run should insert");
+
+        let snapshot = service
+            .load_snapshots(&dataset.dataset_id)
+            .expect("snapshots should load")
+            .into_iter()
+            .next()
+            .expect("snapshot should exist");
+        let signal_run = crate::models::RecommendationRunDto {
+            recommendation_id: format!("rec-{}", Uuid::new_v4()),
+            status: "completed".into(),
+            trigger_type: "backtest".into(),
+            has_trade: true,
+            symbol: Some("SHSE.600000".into()),
+            stock_name: Some("浦发银行".into()),
+            direction: Some("买入".into()),
+            market_type: "ashare".into(),
+            exchanges: vec!["akshare:xueqiu".into()],
+            confidence_score: 70.0,
+            rationale: "测试开仓".into(),
+            symbol_recommendations: Vec::new(),
+            risk_status: "approved".into(),
+            entry_low: Some(10.0),
+            entry_high: Some(10.0),
+            stop_loss: None,
+            take_profit: None,
+            leverage: None,
+            amount_cny: Some(10_000.0),
+            invalidation: None,
+            max_loss_cny: None,
+            no_trade_reason: None,
+            risk_details: RiskDecisionDto::default(),
+            data_snapshot_at: snapshot.captured_at.clone(),
+            model_provider: "OpenAI-compatible".into(),
+            model_name: "gpt-test".into(),
+            prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+            user_preference_version: "test".into(),
+            generated_at: now_rfc3339(),
+        };
+        service
+            .insert_signal(
+                &backtest_id,
+                "sig-1",
+                &snapshot,
+                &signal_run,
+                "{}",
+                "{}",
+                "generated",
+            )
+            .expect("signal should insert");
+
+        let summary = service.summary(&backtest_id).expect("summary should load");
+        assert!(summary.open_positions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_respects_initial_capital_and_skips_orders_when_cash_is_insufficient() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000", "SZSE.000001"]);
+        for (symbol, name, price) in [
+            ("SHSE.600000", "浦发银行", 10.0),
+            ("SZSE.000001", "平安银行", 20.0),
+        ] {
+            service
+                .insert_snapshot(
+                    &dataset,
+                    symbol,
+                    Some(name),
+                    "2026-05-06T09:30:00+08:00",
+                    &bar("2026-05-06 09:30:00", price),
+                    0.0,
+                    1000.0,
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "{}".into(),
+                    None,
+                    "{}".into(),
+                )
+                .expect("snapshot should insert");
+        }
+
+        let backtest_id = format!("bt-{}", Uuid::new_v4());
+        service
+            .db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "INSERT INTO backtest_runs (
+                  backtest_id, dataset_id, name, status, model_provider, model_name,
+                  prompt_version, risk_settings_json, max_holding_days, created_at
+                ) VALUES (?1, ?2, '测试回测', 'signals_ready', 'OpenAI-compatible', 'gpt-test', ?3, '{}', 7, ?4)",
+                params![backtest_id, dataset.dataset_id, RECOMMENDATION_PROMPT_VERSION, now_rfc3339()],
+            )
+            .expect("run should insert");
+
+        let snapshots = service
+            .load_snapshots(&dataset.dataset_id)
+            .expect("snapshots should load");
+        for (signal_id, symbol, stock_name) in [
+            ("sig-1", "SHSE.600000", "浦发银行"),
+            ("sig-2", "SZSE.000001", "平安银行"),
+        ] {
+            let snapshot = snapshots
+                .iter()
+                .find(|item| item.symbol == symbol)
+                .expect("snapshot should exist");
+            let signal_run = crate::models::RecommendationRunDto {
+                recommendation_id: format!("rec-{}", Uuid::new_v4()),
+                status: "completed".into(),
+                trigger_type: "backtest".into(),
+                has_trade: true,
+                symbol: Some(symbol.into()),
+                stock_name: Some(stock_name.into()),
+                direction: Some("买入".into()),
+                market_type: "ashare".into(),
+                exchanges: vec!["akshare:xueqiu".into()],
+                confidence_score: 70.0,
+                rationale: "测试开仓".into(),
+                symbol_recommendations: Vec::new(),
+                risk_status: "approved".into(),
+                entry_low: Some(snapshot.last_price),
+                entry_high: Some(snapshot.last_price),
+                stop_loss: None,
+                take_profit: None,
+                leverage: None,
+                amount_cny: Some(600_000.0),
+                invalidation: None,
+                max_loss_cny: None,
+                no_trade_reason: None,
+                risk_details: RiskDecisionDto::default(),
+                data_snapshot_at: snapshot.captured_at.clone(),
+                model_provider: "OpenAI-compatible".into(),
+                model_name: "gpt-test".into(),
+                prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+                user_preference_version: "test".into(),
+                generated_at: now_rfc3339(),
+            };
+            service
+                .insert_signal(&backtest_id, signal_id, snapshot, &signal_run, "{}", "{}", "opened")
+                .expect("signal should insert");
+        }
+
+        let run = service
+            .load_run(&backtest_id)
+            .expect("run should load")
+            .expect("run should exist");
+        service
+            .replay_trades_inner(&run, &AtomicBool::new(false))
+            .await
+            .expect("replay should succeed");
+
+        let summary = service.summary(&backtest_id).expect("summary should load");
+        assert_eq!(summary.open_positions.len(), 1);
+        assert_eq!(summary.open_positions[0].signal_id, "sig-1");
+    }
+
+    #[tokio::test]
+    async fn replay_equity_curve_uses_total_equity_instead_of_trade_percent_sum() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000"]);
+        for (captured_at, price) in [
+            ("2026-05-06T09:30:00+08:00", 10.0),
+            ("2026-05-07T10:00:00+08:00", 11.0),
+        ] {
+            service
+                .insert_snapshot(
+                    &dataset,
+                    "SHSE.600000",
+                    Some("浦发银行"),
+                    captured_at,
+                    &bar(&captured_at.replace('T', " ").replace("+08:00", ""), price),
+                    0.0,
+                    1000.0,
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "{}".into(),
+                    None,
+                    "{}".into(),
+                )
+                .expect("snapshot should insert");
+        }
+
+        let backtest_id = format!("bt-{}", Uuid::new_v4());
+        service
+            .db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "INSERT INTO backtest_runs (
+                  backtest_id, dataset_id, name, status, model_provider, model_name,
+                  prompt_version, risk_settings_json, max_holding_days, created_at
+                ) VALUES (?1, ?2, '测试回测', 'signals_ready', 'OpenAI-compatible', 'gpt-test', ?3, '{}', 7, ?4)",
+                params![backtest_id, dataset.dataset_id, RECOMMENDATION_PROMPT_VERSION, now_rfc3339()],
+            )
+            .expect("run should insert");
+
+        let snapshot = service
+            .load_snapshots(&dataset.dataset_id)
+            .expect("snapshots should load")
+            .into_iter()
+            .find(|item| item.captured_at == "2026-05-06T09:30:00+08:00")
+            .expect("snapshot should exist");
+        let signal_run = crate::models::RecommendationRunDto {
+            recommendation_id: format!("rec-{}", Uuid::new_v4()),
+            status: "completed".into(),
+            trigger_type: "backtest".into(),
+            has_trade: true,
+            symbol: Some("SHSE.600000".into()),
+            stock_name: Some("浦发银行".into()),
+            direction: Some("买入".into()),
+            market_type: "ashare".into(),
+            exchanges: vec!["akshare:xueqiu".into()],
+            confidence_score: 70.0,
+            rationale: "测试开仓".into(),
+            symbol_recommendations: Vec::new(),
+            risk_status: "approved".into(),
+            entry_low: Some(10.0),
+            entry_high: Some(10.0),
+            stop_loss: None,
+            take_profit: None,
+            leverage: None,
+            amount_cny: Some(500_000.0),
+            invalidation: None,
+            max_loss_cny: None,
+            no_trade_reason: None,
+            risk_details: RiskDecisionDto::default(),
+            data_snapshot_at: snapshot.captured_at.clone(),
+            model_provider: "OpenAI-compatible".into(),
+            model_name: "gpt-test".into(),
+            prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+            user_preference_version: "test".into(),
+            generated_at: now_rfc3339(),
+        };
+        service
+            .insert_signal(&backtest_id, "sig-1", &snapshot, &signal_run, "{}", "{}", "opened")
+            .expect("signal should insert");
+
+        let run = service
+            .load_run(&backtest_id)
+            .expect("run should load")
+            .expect("run should exist");
+        service
+            .replay_trades_inner(&run, &AtomicBool::new(false))
+            .await
+            .expect("replay should succeed");
+
+        let summary = service.summary(&backtest_id).expect("summary should load");
+        assert_eq!(
+            summary
+                .equity_curve
+                .iter()
+                .map(|point| point.cumulative_pnl_percent)
+                .collect::<Vec<_>>(),
+            vec![0.0, 5.0]
+        );
+        assert_eq!(summary.total_pnl_cny, 50_000.0);
+        assert_eq!(summary.total_pnl_percent, 5.0);
+    }
+
+    #[tokio::test]
+    async fn replay_equity_curve_carries_forward_latest_price_when_symbol_missing_current_timepoint() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000", "SZSE.000001"]);
+        service
+            .insert_snapshot(
+                &dataset,
+                "SHSE.600000",
+                Some("浦发银行"),
+                "2026-05-06T09:35:00+08:00",
+                &bar("2026-05-06 09:35:00", 10.0),
+                0.0,
+                1000.0,
+                "[]".into(),
+                "[]".into(),
+                "[]".into(),
+                "[]".into(),
+                "{}".into(),
+                None,
+                "{}".into(),
+            )
+            .expect("sparse snapshot should insert");
+        for captured_at in ["2026-05-06T09:35:00+08:00", "2026-05-06T09:40:00+08:00"] {
+            service
+                .insert_snapshot(
+                    &dataset,
+                    "SZSE.000001",
+                    Some("平安银行"),
+                    captured_at,
+                    &bar(&captured_at.replace('T', " ").replace("+08:00", ""), 20.0),
+                    0.0,
+                    1000.0,
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "{}".into(),
+                    None,
+                    "{}".into(),
+                )
+                .expect("reference snapshot should insert");
+        }
+
+        let backtest_id = format!("bt-{}", Uuid::new_v4());
+        service
+            .db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "INSERT INTO backtest_runs (
+                  backtest_id, dataset_id, name, status, model_provider, model_name,
+                  prompt_version, risk_settings_json, max_holding_days, created_at
+                ) VALUES (?1, ?2, '测试回测', 'signals_ready', 'OpenAI-compatible', 'gpt-test', ?3, '{}', 7, ?4)",
+                params![backtest_id, dataset.dataset_id, RECOMMENDATION_PROMPT_VERSION, now_rfc3339()],
+            )
+            .expect("run should insert");
+
+        let snapshot = service
+            .load_snapshots(&dataset.dataset_id)
+            .expect("snapshots should load")
+            .into_iter()
+            .find(|item| item.symbol == "SHSE.600000")
+            .expect("opening snapshot should exist");
+        let signal_run = crate::models::RecommendationRunDto {
+            recommendation_id: format!("rec-{}", Uuid::new_v4()),
+            status: "completed".into(),
+            trigger_type: "backtest".into(),
+            has_trade: true,
+            symbol: Some("SHSE.600000".into()),
+            stock_name: Some("浦发银行".into()),
+            direction: Some("买入".into()),
+            market_type: "ashare".into(),
+            exchanges: vec!["akshare:xueqiu".into()],
+            confidence_score: 70.0,
+            rationale: "测试开仓".into(),
+            symbol_recommendations: Vec::new(),
+            risk_status: "approved".into(),
+            entry_low: Some(10.0),
+            entry_high: Some(10.0),
+            stop_loss: None,
+            take_profit: None,
+            leverage: None,
+            amount_cny: Some(500_000.0),
+            invalidation: None,
+            max_loss_cny: None,
+            no_trade_reason: None,
+            risk_details: RiskDecisionDto::default(),
+            data_snapshot_at: snapshot.captured_at.clone(),
+            model_provider: "OpenAI-compatible".into(),
+            model_name: "gpt-test".into(),
+            prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+            user_preference_version: "test".into(),
+            generated_at: now_rfc3339(),
+        };
+        service
+            .insert_signal(&backtest_id, "sig-1", &snapshot, &signal_run, "{}", "{}", "opened")
+            .expect("signal should insert");
+
+        let run = service
+            .load_run(&backtest_id)
+            .expect("run should load")
+            .expect("run should exist");
+        service
+            .replay_trades_inner(&run, &AtomicBool::new(false))
+            .await
+            .expect("replay should succeed");
+
+        let summary = service.summary(&backtest_id).expect("summary should load");
+        assert_eq!(
+            summary
+                .equity_curve
+                .iter()
+                .map(|point| point.cumulative_pnl_percent)
+                .collect::<Vec<_>>(),
+            vec![0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn summary_counts_open_positions_in_trade_count_and_win_rate() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000", "SZSE.000001", "SZSE.000002"]);
+        for (symbol, name, captured_at, price) in [
+            ("SHSE.600000", "浦发银行", "2026-05-06T09:30:00+08:00", 10.0),
+            ("SHSE.600000", "浦发银行", "2026-05-07T09:30:00+08:00", 11.0),
+            ("SZSE.000001", "平安银行", "2026-05-06T09:30:00+08:00", 20.0),
+            ("SZSE.000001", "平安银行", "2026-05-07T09:30:00+08:00", 21.0),
+            ("SZSE.000002", "万 科Ａ", "2026-05-06T09:30:00+08:00", 30.0),
+            ("SZSE.000002", "万 科Ａ", "2026-05-07T09:30:00+08:00", 29.0),
+        ] {
+            service
+                .insert_snapshot(
+                    &dataset,
+                    symbol,
+                    Some(name),
+                    captured_at,
+                    &bar(&captured_at.replace('T', " ").replace("+08:00", ""), price),
+                    0.0,
+                    1000.0,
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "[]".into(),
+                    "{}".into(),
+                    None,
+                    "{}".into(),
+                )
+                .expect("snapshot should insert");
+        }
+
+        let backtest_id = format!("bt-{}", Uuid::new_v4());
+        service
+            .db
+            .lock()
+            .expect("backtest db lock poisoned")
+            .connection()
+            .execute(
+                "INSERT INTO backtest_runs (
+                  backtest_id, dataset_id, name, status, model_provider, model_name,
+                  prompt_version, risk_settings_json, max_holding_days, created_at
+                ) VALUES (?1, ?2, '测试回测', 'completed', 'OpenAI-compatible', 'gpt-test', ?3, '{}', 7, ?4)",
+                params![
+                    backtest_id,
+                    dataset.dataset_id,
+                    RECOMMENDATION_PROMPT_VERSION,
+                    now_rfc3339()
+                ],
+            )
+            .expect("run should insert");
+
+        let closed_trade = BacktestTradeDto {
+            trade_id: format!("trade-{}", Uuid::new_v4()),
+            backtest_id: backtest_id.clone(),
+            signal_id: None,
+            symbol: "SHSE.600000".into(),
+            stock_name: Some("浦发银行".into()),
+            direction: "long".into(),
+            entry_price: 10.0,
+            entry_at: "2026-05-06T09:30:00+08:00".into(),
+            exit_price: 11.0,
+            exit_at: "2026-05-07T09:30:00+08:00".into(),
+            exit_reason: "take_profit".into(),
+            stop_loss: None,
+            take_profit: None,
+            amount_cny: Some(10_000.0),
+            holding_periods: 8,
+            pnl_cny: 1_000.0,
+            pnl_percent: 10.0,
+        };
+        service
+            .insert_trade(&closed_trade)
+            .expect("closed trade should insert");
+
+        let snapshots = service
+            .load_snapshots(&dataset.dataset_id)
+            .expect("snapshots should load");
+
+        let positive_open_snapshot = snapshots
+            .iter()
+            .find(|item| item.symbol == "SZSE.000001" && item.captured_at == "2026-05-06T09:30:00+08:00")
+            .expect("positive snapshot should exist")
+            .clone();
+        let positive_open_signal = crate::models::RecommendationRunDto {
+            recommendation_id: format!("rec-{}", Uuid::new_v4()),
+            status: "completed".into(),
+            trigger_type: "backtest".into(),
+            has_trade: true,
+            symbol: Some("SZSE.000001".into()),
+            stock_name: Some("平安银行".into()),
+            direction: Some("买入".into()),
+            market_type: "ashare".into(),
+            exchanges: vec!["akshare:xueqiu".into()],
+            confidence_score: 80.0,
+            rationale: "测试持仓".into(),
+            symbol_recommendations: Vec::new(),
+            risk_status: "approved".into(),
+            entry_low: Some(20.0),
+            entry_high: Some(20.0),
+            stop_loss: None,
+            take_profit: None,
+            leverage: None,
+            amount_cny: Some(10_000.0),
+            invalidation: None,
+            max_loss_cny: None,
+            no_trade_reason: None,
+            risk_details: RiskDecisionDto::default(),
+            data_snapshot_at: positive_open_snapshot.captured_at.clone(),
+            model_provider: "OpenAI-compatible".into(),
+            model_name: "gpt-test".into(),
+            prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+            user_preference_version: "test".into(),
+            generated_at: now_rfc3339(),
+        };
+        service
+            .insert_signal(
+                &backtest_id,
+                "sig-open-win",
+                &positive_open_snapshot,
+                &positive_open_signal,
+                "{}",
+                "{}",
+                "opened",
+            )
+            .expect("positive open signal should insert");
+
+        let negative_open_snapshot = snapshots
+            .iter()
+            .find(|item| item.symbol == "SZSE.000002" && item.captured_at == "2026-05-06T09:30:00+08:00")
+            .expect("negative snapshot should exist")
+            .clone();
+        let negative_open_signal = crate::models::RecommendationRunDto {
+            recommendation_id: format!("rec-{}", Uuid::new_v4()),
+            status: "completed".into(),
+            trigger_type: "backtest".into(),
+            has_trade: true,
+            symbol: Some("SZSE.000002".into()),
+            stock_name: Some("万 科Ａ".into()),
+            direction: Some("买入".into()),
+            market_type: "ashare".into(),
+            exchanges: vec!["akshare:xueqiu".into()],
+            confidence_score: 80.0,
+            rationale: "测试持仓".into(),
+            symbol_recommendations: Vec::new(),
+            risk_status: "approved".into(),
+            entry_low: Some(30.0),
+            entry_high: Some(30.0),
+            stop_loss: None,
+            take_profit: None,
+            leverage: None,
+            amount_cny: Some(10_000.0),
+            invalidation: None,
+            max_loss_cny: None,
+            no_trade_reason: None,
+            risk_details: RiskDecisionDto::default(),
+            data_snapshot_at: negative_open_snapshot.captured_at.clone(),
+            model_provider: "OpenAI-compatible".into(),
+            model_name: "gpt-test".into(),
+            prompt_version: RECOMMENDATION_PROMPT_VERSION.into(),
+            user_preference_version: "test".into(),
+            generated_at: now_rfc3339(),
+        };
+        service
+            .insert_signal(
+                &backtest_id,
+                "sig-open-loss",
+                &negative_open_snapshot,
+                &negative_open_signal,
+                "{}",
+                "{}",
+                "opened",
+            )
+            .expect("negative open signal should insert");
+
+        let summary = service.summary(&backtest_id).expect("summary should load");
+        assert_eq!(summary.trade_count, 4);
+        assert_eq!(summary.win_rate, 75.0);
+        assert_eq!(summary.open_positions.len(), 2);
+    }
+
+    #[test]
+    fn expected_timepoints_always_include_session_close() {
+        let timepoints =
+            expected_timepoints("2026-05-06", "2026-05-06", 45).expect("timepoints should build");
+
+        assert_eq!(
+            timepoints,
+            vec![
+                "2026-05-06T09:30:00+08:00",
+                "2026-05-06T10:15:00+08:00",
+                "2026-05-06T11:00:00+08:00",
+                "2026-05-06T11:30:00+08:00",
+                "2026-05-06T13:00:00+08:00",
+                "2026-05-06T13:45:00+08:00",
+                "2026-05-06T14:30:00+08:00",
+                "2026-05-06T15:00:00+08:00",
+            ]
+        );
+    }
+
+    #[test]
+    fn expected_timepoints_skip_holidays_when_calendar_marks_them_closed() {
+        let timepoints = expected_timepoints_with_trade_day_filter(
+            "2026-05-01",
+            "2026-05-07",
+            60,
+            |date| matches!(date.to_string().as_str(), "2026-05-06" | "2026-05-07"),
+        )
+        .expect("timepoints should build");
+
+        assert_eq!(
+            timepoints,
+            vec![
+                "2026-05-06T09:30:00+08:00",
+                "2026-05-06T10:30:00+08:00",
+                "2026-05-06T11:30:00+08:00",
+                "2026-05-06T13:00:00+08:00",
+                "2026-05-06T14:00:00+08:00",
+                "2026-05-06T15:00:00+08:00",
+                "2026-05-07T09:30:00+08:00",
+                "2026-05-07T10:30:00+08:00",
+                "2026-05-07T11:30:00+08:00",
+                "2026-05-07T13:00:00+08:00",
+                "2026-05-07T14:00:00+08:00",
+                "2026-05-07T15:00:00+08:00",
+            ]
+        );
+    }
+
+    #[test]
+    fn sampled_bars_align_to_target_timepoints_and_finish_at_market_close() {
+        let mut bars = Vec::new();
+        let mut price = 8.7;
+        for hour in [9, 10, 11] {
+            let start_minute = if hour == 9 { 35 } else { 0 };
+            let end_minute = if hour == 11 { 30 } else { 55 };
+            let mut minute = start_minute;
+            while minute <= end_minute {
+                bars.push(bar(&format!("2026-05-06 {hour:02}:{minute:02}:00"), price));
+                price += 0.01;
+                minute += 5;
+            }
+        }
+        for hour in [13, 14, 15] {
+            let start_minute = if hour == 13 { 5 } else { 0 };
+            let end_minute = if hour == 15 { 0 } else { 55 };
+            let mut minute = start_minute;
+            while minute <= end_minute {
+                bars.push(bar(&format!("2026-05-06 {hour:02}:{minute:02}:00"), price));
+                price += 0.01;
+                minute += 5;
+            }
+        }
+
+        let selected = sampled_bars(&bars, "2026-05-06", "2026-05-06", 60);
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.captured_at.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "2026-05-06T09:30:00+08:00",
+                "2026-05-06T10:30:00+08:00",
+                "2026-05-06T11:30:00+08:00",
+                "2026-05-06T13:00:00+08:00",
+                "2026-05-06T14:00:00+08:00",
+                "2026-05-06T15:00:00+08:00",
+            ]
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| normalize_bar_time(&item.bar.open_time))
+                .collect::<Vec<_>>(),
+            vec![
+                "2026-05-06T09:35:00+08:00",
+                "2026-05-06T10:30:00+08:00",
+                "2026-05-06T11:30:00+08:00",
+                "2026-05-06T13:05:00+08:00",
+                "2026-05-06T14:00:00+08:00",
+                "2026-05-06T15:00:00+08:00",
+            ]
+        );
+    }
+
+    #[test]
+    fn sampled_bars_do_not_forward_fill_from_later_trading_day() {
+        let bars = vec![
+            bar("2026-05-06 09:30:00", 8.7),
+            bar("2026-05-06 10:30:00", 8.9),
+        ];
+        let targets = vec![
+            "2026-05-01T09:30:00+08:00".to_string(),
+            "2026-05-06T09:30:00+08:00".to_string(),
+            "2026-05-06T10:30:00+08:00".to_string(),
+        ];
+
+        let selected = sampled_bars_with_targets(&bars, "2026-05-01", "2026-05-06", &targets);
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.captured_at.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "2026-05-06T09:30:00+08:00",
+                "2026-05-06T10:30:00+08:00",
+            ]
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| normalize_bar_time(&item.bar.open_time))
+                .collect::<Vec<_>>(),
+            vec![
+                "2026-05-06T09:30:00+08:00",
+                "2026-05-06T10:30:00+08:00",
+            ]
+        );
+    }
+
+    #[test]
+    fn backtest_financial_context_returns_shared_context_when_enabled() {
+        let service = financial_report_service_with_analysis();
+        let mut runtime = runtime_settings();
+        runtime.use_financial_report_data = true;
+
+        let context = backtest_financial_context(&service, &runtime, "SHSE.600000")
+            .expect("context should exist");
+
+        assert_eq!(context.key_summary, "收入和利润稳定");
+        assert_eq!(context.radar_scores.profitability, 8.2);
+        assert_eq!(context.radar_scores.cash_generation, 8.7);
+    }
+
+    #[test]
+    fn backtest_financial_context_returns_none_when_disabled() {
+        let service = financial_report_service_with_analysis();
+        let mut runtime = runtime_settings();
+        runtime.use_financial_report_data = false;
+
+        assert!(backtest_financial_context(&service, &runtime, "SHSE.600000").is_none());
     }
 }

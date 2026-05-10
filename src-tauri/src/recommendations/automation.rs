@@ -913,6 +913,7 @@ pub async fn execute_recommendation_job(
         match llm::generate_trade_plan(
             settings_service,
             market_data_service,
+            recommendation_service,
             &rows,
             risk_equity_usdt,
             symbol.as_deref(),
@@ -1012,6 +1013,163 @@ pub async fn execute_recommendation_job(
                 None,
                 Some(error.to_string()),
             );
+            Err(error)
+        }
+    }
+}
+
+pub async fn execute_recommendation_generation(
+    market_data_service: &MarketDataService,
+    recommendation_service: &RecommendationService,
+    notification_service: &NotificationService,
+    paper_service: &PaperService,
+    settings_service: &SettingsService,
+    financial_report_service: Option<&FinancialReportService>,
+    app_handle: Option<&tauri::AppHandle>,
+) -> anyhow::Result<Vec<RecommendationRunDto>> {
+    let runtime = settings_service.get_runtime_settings();
+    let enabled_exchanges: Vec<String> = Vec::new();
+    let risk_equity_usdt = recommendation_risk_equity_usdt(&runtime, paper_service);
+    let rows = market_data_service.cached_market_rows_for_watchlist(&runtime.watchlist_symbols);
+    recommendation_service.initialize_generation_progress(&runtime.watchlist_symbols, &rows);
+
+    if runtime.watchlist_symbols.is_empty() {
+        recommendation_service.fail_generation_progress("自选股票池为空，无法生成 AI 建议".into());
+        return Err(anyhow::anyhow!("自选股票池为空，无法生成 AI 建议"));
+    }
+
+    let decision_rows = rows
+        .iter()
+        .filter(|row| row.market_type.eq_ignore_ascii_case("ashare"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let account_snapshot = build_account_snapshot_json(&runtime, paper_service, risk_equity_usdt);
+    let result = if decision_rows.is_empty() {
+        let run = build_no_live_market_run(&runtime, &enabled_exchanges, None, "manual");
+        let stored = recommendation_service
+            .store_record(RecommendationRecord {
+                trigger_type: "manual".into(),
+                ai_raw_output: r#"{"source":"market_data_unavailable"}"#.into(),
+                ai_structured_output: serde_json::json!({
+                    "has_trade": false,
+                    "rationale": run.rationale,
+                })
+                .to_string(),
+                risk_result: default_risk_result_json(&run),
+                market_snapshot: build_market_snapshot_json(
+                    &run,
+                    &decision_rows,
+                    &enabled_exchanges,
+                    None,
+                ),
+                account_snapshot: account_snapshot.clone(),
+                run,
+            })
+            .await?;
+        Ok(vec![stored])
+    } else {
+        let position_contexts = paper_service
+            .list_positions_snapshot()
+            .into_iter()
+            .map(|position| llm::PositionContext {
+                symbol: position.symbol,
+                side: position.side,
+                size: position.size,
+                entry_price: position.entry_price,
+                mark_price: position.mark_price,
+                pnl_percent: position.pnl_percent,
+            })
+            .collect::<Vec<_>>();
+        let financial_analyses =
+            financial_analysis_contexts(financial_report_service, &runtime, &rows);
+        match llm::generate_trade_plan(
+            settings_service,
+            market_data_service,
+            recommendation_service,
+            &rows,
+            risk_equity_usdt,
+            None,
+            &enabled_exchanges,
+            &position_contexts,
+            &financial_analyses,
+        )
+        .await
+        {
+            Ok(plans) => {
+                let records = plans
+                    .into_iter()
+                    .map(|mut plan| {
+                        plan.run.trigger_type = "manual".into();
+                        RecommendationRecord {
+                            trigger_type: "manual".into(),
+                            ai_raw_output: plan.ai_raw_output,
+                            ai_structured_output: plan.ai_structured_output,
+                            risk_result: default_risk_result_json(&plan.run),
+                            market_snapshot: build_market_snapshot_json(
+                                &plan.run,
+                                &decision_rows,
+                                &enabled_exchanges,
+                                Some((&plan.system_prompt, &plan.user_prompt)),
+                            ),
+                            account_snapshot: account_snapshot.clone(),
+                            run: plan.run,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                recommendation_service.store_records(records).await
+            }
+            Err(error) => Err(error),
+        }
+    };
+
+    match result {
+        Ok(runs) => {
+            let trade_count = runs.iter().filter(|run| run.has_trade).count();
+            let mut message = if trade_count > 0 {
+                format!(
+                    "已完成 {} 条 AI 个股建议，其中 {} 条为交易建议。",
+                    runs.len(),
+                    trade_count
+                )
+            } else {
+                format!("已完成 {} 条 AI 个股建议，当前均为观望或拦截。", runs.len())
+            };
+
+            if runtime.auto_paper_execution && runtime.account_mode == "paper" {
+                let account_id = preferred_paper_account_id(&runtime);
+                for run in runs
+                    .iter()
+                    .filter(|run| run.has_trade && run.direction.as_deref() == Some("买入"))
+                {
+                    match paper_service
+                        .create_draft_from_recommendation(run, &account_id)
+                        .await
+                    {
+                        Ok(draft) => {
+                            message.push_str(&format!(" 已生成 {} 的模拟委托。", draft.symbol));
+                        }
+                        Err(error) => {
+                            message.push_str(&format!(" 模拟委托生成失败：{error}。"));
+                        }
+                    }
+                }
+            }
+
+            if runtime.notifications.recommendations {
+                for run in &runs {
+                    if let Err(error) =
+                        notification_service.dispatch_recommendation(app_handle, run)
+                    {
+                        message.push_str(&format!(" 通知发送失败：{error}。"));
+                    }
+                }
+            }
+
+            recommendation_service.complete_generation_progress(message.clone());
+            Ok(runs)
+        }
+        Err(error) => {
+            recommendation_service.fail_generation_progress(format!("AI 建议生成失败：{error}"));
             Err(error)
         }
     }
@@ -1273,7 +1431,7 @@ fn financial_analysis_contexts(
     financial_report_service: Option<&FinancialReportService>,
     runtime: &crate::models::RuntimeSettingsDto,
     rows: &[crate::models::MarketListRow],
-) -> std::collections::HashMap<String, llm::FinancialAnalysisPromptContext> {
+) -> std::collections::HashMap<String, crate::models::AiFinancialReportContextDto> {
     if !runtime.use_financial_report_data {
         return std::collections::HashMap::new();
     }
@@ -1282,17 +1440,8 @@ fn financial_analysis_contexts(
     };
     rows.iter()
         .filter_map(|row| {
-            let snapshot = service.snapshot(&row.symbol).ok()?;
-            let analysis = snapshot.analysis?;
-            Some((
-                row.symbol.clone(),
-                llm::FinancialAnalysisPromptContext {
-                    key_summary: analysis.key_summary,
-                    positive_factors: analysis.positive_factors,
-                    negative_factors: analysis.negative_factors,
-                    fraud_risk_points: analysis.fraud_risk_points,
-                },
-            ))
+            let analysis = service.shared_ai_financial_context(&row.symbol).ok()??;
+            Some((row.symbol.clone(), analysis))
         })
         .collect()
 }

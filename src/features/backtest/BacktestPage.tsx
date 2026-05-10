@@ -1,4 +1,5 @@
-import { useEffect, useId, useState } from "react";
+import * as echarts from "echarts";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, BarChart3, Database, Play, RotateCw, Square } from "lucide-react";
 import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
@@ -95,6 +96,227 @@ function formatSignedPercent(value: number) {
   return formatPercent(value);
 }
 
+function buildEquityCurveOption(points: Array<{ capturedAt: string; cumulativePnlPercent: number }>) {
+  const values = points.length > 0 ? points : [{ capturedAt: "", cumulativePnlPercent: 0 }];
+  return {
+    animation: false,
+    grid: {
+      left: 18,
+      right: 18,
+      top: 24,
+      bottom: 28,
+      containLabel: true,
+    },
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: (value: number) => formatSignedPercent(value),
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: values.map((point) => formatDateTime(point.capturedAt)),
+      axisLabel: {
+        color: "rgba(237, 243, 255, 0.58)",
+        formatter: (value: string) => value.slice(5, 16),
+      },
+      axisLine: {
+        lineStyle: {
+          color: "rgba(237, 243, 255, 0.12)",
+        },
+      },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: {
+        color: "rgba(237, 243, 255, 0.58)",
+        formatter: (value: number) => `${value}%`,
+      },
+      splitLine: {
+        lineStyle: {
+          color: "rgba(237, 243, 255, 0.08)",
+        },
+      },
+    },
+    series: [
+      {
+        type: "line",
+        smooth: true,
+        showSymbol: values.length <= 1,
+        data: values.map((point) => point.cumulativePnlPercent),
+        lineStyle: {
+          width: 3,
+          color: "#6cf4cb",
+        },
+        itemStyle: {
+          color: "#8fdcff",
+        },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: "rgba(108, 244, 203, 0.28)" },
+            { offset: 1, color: "rgba(108, 244, 203, 0.02)" },
+          ]),
+        },
+      },
+    ],
+  };
+}
+
+type TradeCardRow = {
+  key: string;
+  symbol: string;
+  stockName: string;
+  entryAt: string;
+  entryPrice: number;
+  exitAt?: string;
+  exitPrice?: number;
+  exitReason?: string;
+  amountCny: number;
+  pnlCny: number;
+  pnlPercent: number;
+  isOpen: boolean;
+};
+
+type FinalHoldingRow = {
+  symbol: string;
+  stockName: string;
+  entryAt: string;
+  holdingCost: number;
+  latestPrice: number;
+  pnlPercent: number;
+  pnlCny: number;
+  holdingAmountCny: number;
+  totalBuyAmountCny: number;
+  totalSellAmountCny: number;
+};
+
+function symbolTradeKey(symbol: string) {
+  return symbol;
+}
+
+function formatMaybeDateTime(value?: string) {
+  return value ? formatDateTime(value) : "无";
+}
+
+function buildTradeCardRows(
+  trades: Awaited<ReturnType<typeof listBacktestTrades>>,
+  openPositions: Awaited<ReturnType<typeof getBacktestSummary>>["openPositions"],
+) {
+  const closedRows = trades.map(
+    (trade): TradeCardRow => ({
+      key: trade.tradeId,
+      symbol: trade.symbol,
+      stockName: trade.stockName ?? trade.symbol,
+      entryAt: trade.entryAt,
+      entryPrice: trade.entryPrice,
+      exitAt: trade.exitAt,
+      exitPrice: trade.exitPrice,
+      exitReason: trade.exitReason,
+      amountCny: trade.amountCny ?? 0,
+      pnlCny: trade.pnlCny,
+      pnlPercent: trade.pnlPercent,
+      isOpen: false,
+    }),
+  );
+  const openRows = openPositions.map(
+    (position): TradeCardRow => ({
+      key: position.signalId,
+      symbol: position.symbol,
+      stockName: position.stockName ?? position.symbol,
+      entryAt: position.entryAt,
+      entryPrice: position.entryPrice,
+      amountCny: position.amountCny,
+      pnlCny: position.unrealizedPnlCny,
+      pnlPercent: position.unrealizedPnlPercent,
+      isOpen: true,
+    }),
+  );
+
+  return [...closedRows, ...openRows].sort((left, right) => {
+    const leftTime = left.exitAt ?? left.entryAt;
+    const rightTime = right.exitAt ?? right.entryAt;
+    if (leftTime === rightTime) return left.symbol.localeCompare(right.symbol);
+    return leftTime.localeCompare(rightTime);
+  });
+}
+
+function buildFinalHoldingRows(
+  trades: Awaited<ReturnType<typeof listBacktestTrades>>,
+  openPositions: Awaited<ReturnType<typeof getBacktestSummary>>["openPositions"],
+) {
+  const rowsBySymbol = new Map<string, FinalHoldingRow & {
+    totalBuyQuantity: number;
+    latestSeenAt: string;
+  }>();
+
+  const ensureRow = (symbol: string, stockName: string, entryAt: string) => {
+    const existing = rowsBySymbol.get(symbol);
+    if (existing) {
+      existing.stockName = existing.stockName || stockName;
+      if (entryAt < existing.entryAt) {
+        existing.entryAt = entryAt;
+      }
+      return existing;
+    }
+    const row = {
+      symbol,
+      stockName,
+      entryAt,
+      holdingCost: 0,
+      latestPrice: 0,
+      pnlPercent: 0,
+      pnlCny: 0,
+      holdingAmountCny: 0,
+      totalBuyAmountCny: 0,
+      totalSellAmountCny: 0,
+      totalBuyQuantity: 0,
+      latestSeenAt: entryAt,
+    };
+    rowsBySymbol.set(symbol, row);
+    return row;
+  };
+
+  for (const trade of trades) {
+    const row = ensureRow(trade.symbol, trade.stockName ?? trade.symbol, trade.entryAt);
+    const buyAmount = trade.amountCny ?? 0;
+    const quantity = buyAmount / Math.max(trade.entryPrice, 0.01);
+    row.totalBuyAmountCny += buyAmount;
+    row.totalBuyQuantity += quantity;
+    row.totalSellAmountCny += buyAmount + trade.pnlCny;
+    row.pnlCny += trade.pnlCny;
+    row.latestPrice = trade.exitPrice;
+    row.latestSeenAt = trade.exitAt;
+  }
+
+  for (const position of openPositions) {
+    const row = ensureRow(position.symbol, position.stockName ?? position.symbol, position.entryAt);
+    row.totalBuyAmountCny += position.amountCny;
+    row.totalBuyQuantity += position.amountCny / Math.max(position.entryPrice, 0.01);
+    row.holdingAmountCny += position.amountCny + position.unrealizedPnlCny;
+    row.pnlCny += position.unrealizedPnlCny;
+    row.latestPrice = position.markPrice;
+    row.latestSeenAt = position.entryAt;
+  }
+
+  return Array.from(rowsBySymbol.values())
+    .map((row) => {
+      const holdingCost = row.totalBuyQuantity > 0 ? row.totalBuyAmountCny / row.totalBuyQuantity : 0;
+      const pnlPercent = row.totalBuyAmountCny > 0 ? (row.pnlCny / row.totalBuyAmountCny) * 100 : 0;
+      return {
+        symbol: row.symbol,
+        stockName: row.stockName,
+        entryAt: row.entryAt,
+        holdingCost,
+        latestPrice: row.latestPrice,
+        pnlPercent,
+        pnlCny: row.pnlCny,
+        holdingAmountCny: row.holdingAmountCny,
+        totalBuyAmountCny: row.totalBuyAmountCny,
+        totalSellAmountCny: row.totalSellAmountCny,
+      } satisfies FinalHoldingRow;
+    })
+    .sort((left, right) => left.entryAt.localeCompare(right.entryAt));
+}
+
 export function BacktestPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<BacktestTab>("data");
@@ -178,7 +400,13 @@ export function BacktestPage() {
     queryKey: ["backtest-fetch-progress", activeFetchDatasetId],
     queryFn: () => getBacktestFetchProgress(activeFetchDatasetId),
     enabled: activeFetchDatasetId.length > 0,
-    refetchInterval: (query) => (query.state.data?.status === "fetching" ? 1_500 : false),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status && ["ready", "failed", "cancelled"].includes(status)) {
+        return false;
+      }
+      return 1_500;
+    },
   });
   const fetchFailuresQuery = useQuery({
     queryKey: ["backtest-fetch-failures", failureDatasetId],
@@ -542,13 +770,24 @@ export function BacktestPage() {
             <>
               <div className="backtest-summary-strip">
                 <Metric label="总信号" value={summary.totalSignals} hint="AI 输出数量" />
-                <Metric label="交易" value={summary.tradeCount} hint="完整开平仓" />
+                <Metric label="交易" value={summary.tradeCount} hint="开仓 + 平仓" />
                 <Metric label="胜率" value={formatPercent(summary.winRate)} hint="盈利交易占比" />
-                <Metric label="总收益" value={formatPercent(summary.totalPnlPercent)} hint={formatCurrency(summary.totalPnlCny)} />
+                <Metric
+                  label="总收益"
+                  value={formatPercent(summary.totalPnlPercent)}
+                  hint={formatCurrency(summary.totalPnlCny)}
+                  valueClassName={summary.totalPnlPercent >= 0 ? "positive-text" : "negative-text"}
+                />
                 <Metric label="最大回撤" value={formatPercent(-summary.maxDrawdownPercent)} hint="按交易曲线估算" />
                 <Metric label="盈亏比" value={summary.profitFactor?.toFixed(2) ?? "无"} hint="盈利 / 亏损" />
               </div>
-              <EquityCurve points={summary.equityCurve} winRate={summary.winRate} />
+              <EquityCurve points={summary.equityCurve} />
+              <FinalHoldingsTable
+                openPositions={summary.openPositions}
+                totalPnlCny={summary.totalPnlCny}
+                trades={trades}
+              />
+              <TradeTable openPositions={summary.openPositions} trades={trades} />
               <SignalTable
                 directionFilter={signalDirectionFilter}
                 onDirectionFilterChange={setSignalDirectionFilter}
@@ -556,7 +795,6 @@ export function BacktestPage() {
                 signals={signals}
                 stockFilter={signalStockFilter}
               />
-              <TradeTable trades={trades} />
             </>
           ) : (
             <p className="panel__meta">暂无可分析的回测结果。</p>
@@ -567,11 +805,21 @@ export function BacktestPage() {
   );
 }
 
-function Metric({ label, value, hint }: { label: string; value: string | number; hint: string }) {
+function Metric({
+  label,
+  value,
+  hint,
+  valueClassName,
+}: {
+  label: string;
+  value: string | number;
+  hint: string;
+  valueClassName?: string;
+}) {
   return (
     <article className="metric-card">
       <p>{label}</p>
-      <strong>{value}</strong>
+      <strong className={valueClassName}>{value}</strong>
       <small>{hint}</small>
     </article>
   );
@@ -634,10 +882,12 @@ function FetchProgressCard({
   onViewFailures: (id: string) => void;
 }) {
   const total = progress?.totalSnapshots ?? dataset?.totalSnapshots ?? 0;
+  const estimatedTotal = dataset?.estimatedLlmCalls ?? 0;
   const fetched = progress?.fetchedCount ?? dataset?.fetchedCount ?? 0;
   const failures = progress?.failureCount ?? 0;
-  const processed = Math.min(total, fetched + failures);
-  const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+  const progressTotal = estimatedTotal > 0 ? estimatedTotal : total;
+  const processed = Math.min(progressTotal, fetched + failures);
+  const percent = progressTotal > 0 ? Math.round((processed / progressTotal) * 100) : 0;
   const datasetId = progress?.datasetId ?? dataset?.datasetId ?? "";
 
   return (
@@ -903,109 +1153,125 @@ function RunTable({
 
 function EquityCurve({
   points,
-  winRate,
 }: {
   points: Array<{ capturedAt: string; cumulativePnlPercent: number }>;
-  winRate: number;
 }) {
-  const gradientId = `backtest-equity-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
-  const [activePoint, setActivePoint] = useState<null | {
-    capturedAt: string;
-    cumulativePnlPercent: number;
-    delta: number;
-    xPercent: number;
-    yPercent: number;
-  }>(null);
-  const width = 420;
-  const height = 120;
-  const values = points.length > 0 ? points : [{ capturedAt: "", cumulativePnlPercent: 0 }];
-  const rawMin = Math.min(0, ...values.map((point) => point.cumulativePnlPercent));
-  const rawMax = Math.max(0, ...values.map((point) => point.cumulativePnlPercent));
-  const rawRange = rawMax - rawMin;
-  const domainPadding = rawRange <= 0 ? 1 : Math.max(rawRange * 0.12, 0.2);
-  const min = rawMin - domainPadding;
-  const max = rawMax + domainPadding;
-  const range = Math.max(1, max - min);
-  const path = values
-    .map((point, index) => {
-      const x = values.length === 1 ? 0 : (index / (values.length - 1)) * width;
-      const y = height - ((point.cumulativePnlPercent - min) / range) * height;
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const renderedPoints = values.map((point, index) => {
-    const x = values.length === 1 ? 0 : (index / (values.length - 1)) * width;
-    const y = height - ((point.cumulativePnlPercent - min) / range) * height;
-    const previous = values[index - 1]?.cumulativePnlPercent ?? point.cumulativePnlPercent;
-    const delta = point.cumulativePnlPercent - previous;
-    return {
-      ...point,
-      x,
-      y,
-      delta,
-      xPercent: (x / width) * 100,
-      yPercent: (y / height) * 100,
-    };
-  });
   return (
-    <section className="backtest-curve" aria-label="收益曲线" onMouseLeave={() => setActivePoint(null)}>
+    <section className="backtest-curve">
       <div className="panel__header">
         <div>
           <span className="section-label">收益曲线</span>
           <h2>累计 PnL%</h2>
         </div>
       </div>
-      <div className="backtest-curve__plot">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="累计收益曲线">
-          <defs>
-            <linearGradient id={gradientId} x1="0" x2="1" y1="0" y2="0">
-              <stop offset="0%" stopColor="rgba(143, 220, 255, 0.55)" />
-              <stop offset="100%" stopColor="rgba(108, 244, 203, 0.95)" />
-            </linearGradient>
-          </defs>
-          <path className="backtest-curve__grid" d={`M 0 ${height} H ${width} M 0 ${height / 2} H ${width} M 0 0 H ${width}`} />
-          <path className="backtest-curve__line" d={path} style={{ stroke: `url(#${gradientId})` }} />
-          {renderedPoints.map((point, index) => (
-            <circle
-              aria-label={`${formatDateTime(point.capturedAt)} 收益 ${formatSignedPercent(point.cumulativePnlPercent)}`}
-              className="backtest-curve__point"
-              cx={point.x}
-              cy={point.y}
-              key={`${point.capturedAt}-${index}`}
-              onBlur={() => setActivePoint(null)}
-              onFocus={() => setActivePoint(point)}
-              onMouseEnter={() => setActivePoint(point)}
-              r={3.8}
-              tabIndex={0}
-            >
-              <title>
-                {`时间：${formatDateTime(point.capturedAt)}
-收益：${formatSignedPercent(point.cumulativePnlPercent)}
-胜率：${formatPercent(winRate)}
-Pnl%：${formatSignedPercent(point.cumulativePnlPercent)}
-较前一点：${formatSignedPercent(point.delta)}`}
-              </title>
-            </circle>
-          ))}
-        </svg>
-        {activePoint ? (
-          <div
-            className="backtest-curve-tooltip"
-            style={{
-              left: `${activePoint.xPercent}%`,
-              top: `${activePoint.yPercent}%`,
-            }}
-          >
-            <span>{formatDateTime(activePoint.capturedAt)}</span>
-            <strong>收益 {formatSignedPercent(activePoint.cumulativePnlPercent)}</strong>
-            <small>胜率 {formatPercent(winRate)}</small>
-            <small>Pnl% {formatSignedPercent(activePoint.cumulativePnlPercent)}</small>
-            <small>较前一点 {formatSignedPercent(activePoint.delta)}</small>
-          </div>
-        ) : null}
+      <ChartSurface ariaLabel="收益曲线" className="backtest-curve__chart" option={buildEquityCurveOption(points)} />
+    </section>
+  );
+}
+
+function FinalHoldingsTable({
+  trades,
+  openPositions,
+  totalPnlCny,
+}: {
+  trades: Awaited<ReturnType<typeof listBacktestTrades>>;
+  openPositions: Awaited<ReturnType<typeof getBacktestSummary>>["openPositions"];
+  totalPnlCny: number;
+}) {
+  const rows = buildFinalHoldingRows(trades, openPositions);
+  const totalMarketValue = openPositions.reduce((sum, position) => sum + position.amountCny + position.unrealizedPnlCny, 0);
+  const totalAssets = 1_000_000 + totalPnlCny;
+  const totalCash = totalAssets - totalMarketValue;
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="backtest-result-section">
+      <div className="panel__header">
+        <div>
+          <span className="section-label">最终持仓</span>
+          <h2>资产总览与持仓明细</h2>
+        </div>
+      </div>
+      <div className="backtest-summary-strip backtest-summary-strip--holdings" aria-label="资产总览">
+        <Metric label="总资产" value={formatCurrency(totalAssets)} hint="初始资金 + 总盈亏" />
+        <Metric label="总现金" value={formatCurrency(totalCash)} hint="总资产 - 总市值" />
+        <Metric label="总市值" value={formatCurrency(totalMarketValue)} hint="当前持仓市值" />
+        <Metric
+          label="总盈亏"
+          value={formatCurrency(totalPnlCny)}
+          hint="回测结束结果"
+          valueClassName={totalPnlCny >= 0 ? "positive-text" : "negative-text"}
+        />
+      </div>
+      <div className="table-shell table-shell--visible-scrollbar backtest-table-shell backtest-holdings-table">
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>名称</th>
+              <th>开仓时间</th>
+              <th>持仓成本</th>
+              <th>最新价</th>
+              <th>盈亏比例</th>
+              <th>盈亏金额</th>
+              <th>持仓金额</th>
+              <th>总买入金额</th>
+              <th>总卖出金额</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={symbolTradeKey(row.symbol)}>
+                <td>{row.symbol}</td>
+                <td>{row.stockName}</td>
+                <td>{formatMaybeDateTime(row.entryAt)}</td>
+                <td>{formatCurrency(row.holdingCost)}</td>
+                <td>{formatCurrency(row.latestPrice)}</td>
+                <td className={row.pnlPercent >= 0 ? "positive-text" : "negative-text"}>
+                  <span>{formatPercent(row.pnlPercent)}</span>
+                </td>
+                <td className={row.pnlCny >= 0 ? "positive-text" : "negative-text"}>
+                  {formatCurrency(row.pnlCny)}
+                </td>
+                <td>{formatCurrency(row.holdingAmountCny)}</td>
+                <td>{formatCurrency(row.totalBuyAmountCny)}</td>
+                <td>{formatCurrency(row.totalSellAmountCny)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </section>
   );
+}
+
+function ChartSurface({
+  ariaLabel,
+  className,
+  option,
+}: {
+  ariaLabel: string;
+  className: string;
+  option: unknown;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = echarts.init(containerRef.current, undefined, { renderer: "canvas" });
+    chart.setOption(option);
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      chart.dispose();
+    };
+  }, [option]);
+
+  return <div aria-label={ariaLabel} className={className} ref={containerRef} role="img" />;
 }
 
 function SignalTable({
@@ -1021,6 +1287,7 @@ function SignalTable({
   onStockFilterChange: (value: string) => void;
   onDirectionFilterChange: (value: string) => void;
 }) {
+  const [page, setPage] = useState(1);
   const stockOptions = Array.from(new Set(signals.map((signal) => signal.symbol))).sort();
   const directionOptions = Array.from(
     new Set(signals.map((signal) => signal.direction ?? "观望")),
@@ -1032,6 +1299,13 @@ function SignalTable({
       (directionFilter === "all" || direction === directionFilter)
     );
   });
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(filteredSignals.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedSignals = filteredSignals.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
 
   return (
     <section className="backtest-result-section">
@@ -1041,7 +1315,7 @@ function SignalTable({
           <h2>AI 历史信号</h2>
         </div>
         <div className="backtest-filter-row">
-          <select aria-label="筛选个股" value={stockFilter} onChange={(event) => onStockFilterChange(event.target.value)}>
+          <select aria-label="筛选个股" value={stockFilter} onChange={(event) => { onStockFilterChange(event.target.value); setPage(1); }}>
             <option value="all">全部个股</option>
             {stockOptions.map((symbol) => (
               <option key={symbol} value={symbol}>
@@ -1049,7 +1323,7 @@ function SignalTable({
               </option>
             ))}
           </select>
-          <select aria-label="筛选方向" value={directionFilter} onChange={(event) => onDirectionFilterChange(event.target.value)}>
+          <select aria-label="筛选方向" value={directionFilter} onChange={(event) => { onDirectionFilterChange(event.target.value); setPage(1); }}>
             <option value="all">全部方向</option>
             {directionOptions.map((direction) => (
               <option key={direction} value={direction}>
@@ -1073,7 +1347,7 @@ function SignalTable({
             </tr>
           </thead>
           <tbody>
-            {filteredSignals.map((signal) => (
+            {pagedSignals.map((signal) => (
               <tr key={signal.signalId}>
                 <td>{formatDateTime(signal.capturedAt)}</td>
                 <td>{signal.symbol}</td>
@@ -1092,11 +1366,56 @@ function SignalTable({
           </tbody>
         </table>
       </div>
+      {filteredSignals.length > pageSize ? (
+        <div className="pagination-bar">
+          <span>
+            第 {currentPage} / {totalPages} 页，每页 {pageSize} 条
+          </span>
+          <div className="pagination-bar__actions">
+            <button
+              className="ghost-button table-action-button"
+              disabled={currentPage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              type="button"
+            >
+              上一页
+            </button>
+            <button
+              className="ghost-button table-action-button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              type="button"
+            >
+              下一页
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function TradeTable({ trades }: { trades: Awaited<ReturnType<typeof listBacktestTrades>> }) {
+function TradeTable({
+  trades,
+  openPositions,
+}: {
+  trades: Awaited<ReturnType<typeof listBacktestTrades>>;
+  openPositions: Awaited<ReturnType<typeof getBacktestSummary>>["openPositions"];
+}) {
+  const [page, setPage] = useState(1);
+  const [stockFilter, setStockFilter] = useState("all");
+  const rows = buildTradeCardRows(trades, openPositions);
+  const stockOptions = Array.from(new Set(rows.map((row) => row.symbol))).sort();
+  const filteredRows = rows.filter((row) => stockFilter === "all" || row.symbol === stockFilter);
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedRows = filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [stockFilter, trades, openPositions]);
+
   return (
     <section className="backtest-result-section">
       <div className="panel__header">
@@ -1104,14 +1423,26 @@ function TradeTable({ trades }: { trades: Awaited<ReturnType<typeof listBacktest
           <span className="section-label">交易记录</span>
           <h2>模拟开平仓</h2>
         </div>
+        <div className="backtest-filter-row">
+          <select aria-label="筛选个股" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)}>
+            <option value="all">全部个股</option>
+            {stockOptions.map((symbol) => (
+              <option key={symbol} value={symbol}>
+                {symbol}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
-      <div className="table-shell table-shell--visible-scrollbar backtest-table-shell">
+      <div className="table-shell table-shell--visible-scrollbar backtest-table-shell backtest-trade-table">
         <table>
           <thead>
             <tr>
               <th>代码</th>
               <th>名称</th>
+              <th>入场时间</th>
               <th>入场</th>
+              <th>出场时间</th>
               <th>出场</th>
               <th>原因</th>
               <th>收益</th>
@@ -1119,20 +1450,52 @@ function TradeTable({ trades }: { trades: Awaited<ReturnType<typeof listBacktest
             </tr>
           </thead>
           <tbody>
-            {trades.map((trade) => (
-              <tr key={trade.tradeId}>
-                <td>{trade.symbol}</td>
-                <td>{trade.stockName ?? "未知"}</td>
-                <td>{trade.entryPrice}</td>
-                <td>{trade.exitPrice}</td>
-                <td>{exitReasonLabel(trade.exitReason)}</td>
-                <td className={trade.pnlPercent >= 0 ? "positive-text" : "negative-text"}>{formatPercent(trade.pnlPercent)}</td>
-                <td>{formatCurrency(trade.pnlCny)}</td>
+            {pagedRows.map((row) => (
+              <tr key={row.key}>
+                <td>{row.symbol}</td>
+                <td>{row.stockName}</td>
+                <td>{formatDateTime(row.entryAt)}</td>
+                <td>{formatCurrency(row.entryPrice)}</td>
+                <td>{formatMaybeDateTime(row.exitAt)}</td>
+                <td>{row.isOpen ? "无" : formatCurrency(row.exitPrice ?? 0)}</td>
+                <td>{row.isOpen ? "无" : exitReasonLabel(row.exitReason ?? "")}</td>
+                <td className={row.pnlPercent >= 0 ? "positive-text" : "negative-text"}>{formatPercent(row.pnlPercent)}</td>
+                <td>{formatCurrency(row.amountCny)}</td>
               </tr>
             ))}
+            {filteredRows.length === 0 ? (
+              <tr>
+                <td className="table-empty-cell" colSpan={9}>暂无匹配交易。</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>
+      {filteredRows.length > pageSize ? (
+        <div className="pagination-bar">
+          <span>
+            第 {currentPage} / {totalPages} 页，每页 {pageSize} 条
+          </span>
+          <div className="pagination-bar__actions">
+            <button
+              className="ghost-button table-action-button"
+              disabled={currentPage <= 1}
+              onClick={() => setPage((value) => Math.max(1, value - 1))}
+              type="button"
+            >
+              上一页
+            </button>
+            <button
+              className="ghost-button table-action-button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+              type="button"
+            >
+              下一页
+            </button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

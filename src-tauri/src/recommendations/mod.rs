@@ -761,7 +761,7 @@ mod tests {
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{anyhow, Context};
 use futures::future::join_all;
@@ -771,8 +771,9 @@ use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::market::{coin_info, MarketDataService};
 use crate::models::{
-    MarketListRow, OhlcvBar, RecommendationAuditDto, RecommendationHistoryRowDto,
-    RecommendationRunDto, RiskDecisionDto, RuntimeSettingsDto,
+    MarketListRow, OhlcvBar, RecommendationAuditDto, RecommendationGenerationProgressDto,
+    RecommendationGenerationProgressItemDto, RecommendationHistoryRowDto, RecommendationRunDto,
+    RiskDecisionDto, RuntimeSettingsDto,
 };
 use evaluator::estimate_pnl_percent;
 use risk_engine::{evaluate_plan, risk_settings_from_runtime, CandidatePlan, RiskSettings};
@@ -783,6 +784,7 @@ pub(crate) use ledger::RecommendationRecord;
 pub struct RecommendationService {
     ledger: Arc<RecommendationLedger>,
     latest: Arc<RwLock<Vec<RecommendationRunDto>>>,
+    generation_progress: Arc<Mutex<RecommendationGenerationProgressDto>>,
 }
 
 impl Default for RecommendationService {
@@ -814,6 +816,7 @@ impl RecommendationService {
         Self {
             ledger: Arc::new(ledger),
             latest: Arc::new(RwLock::new(latest)),
+            generation_progress: Arc::new(Mutex::new(idle_generation_progress())),
         }
     }
 
@@ -850,6 +853,117 @@ impl RecommendationService {
         recommendation_id: &str,
     ) -> anyhow::Result<Option<RecommendationAuditDto>> {
         self.ledger.load_audit_record(recommendation_id)
+    }
+
+    pub fn generation_progress(&self) -> anyhow::Result<RecommendationGenerationProgressDto> {
+        Ok(self
+            .generation_progress
+            .lock()
+            .expect("recommendation generation progress lock poisoned")
+            .clone())
+    }
+
+    pub fn initialize_generation_progress(
+        &self,
+        watchlist_symbols: &[String],
+        rows: &[MarketListRow],
+    ) {
+        let items = watchlist_symbols
+            .iter()
+            .map(|symbol| RecommendationGenerationProgressItemDto {
+                stock_code: symbol.clone(),
+                short_name: rows
+                    .iter()
+                    .find(|row| row.symbol == *symbol)
+                    .map(|row| row.base_asset.clone())
+                    .unwrap_or_else(|| symbol.rsplit('.').next().unwrap_or(symbol).to_string()),
+                status: "idle".into(),
+                attempt: 0,
+                error_message: None,
+            })
+            .collect::<Vec<_>>();
+        let mut progress = self
+            .generation_progress
+            .lock()
+            .expect("recommendation generation progress lock poisoned");
+        *progress = RecommendationGenerationProgressDto {
+            status: "running".into(),
+            completed_count: 0,
+            total_count: items.len() as u32,
+            message: if items.is_empty() {
+                "自选股票池为空，无法生成 AI 建议".into()
+            } else {
+                "正在生成 AI 建议".into()
+            },
+            items,
+        };
+    }
+
+    pub fn update_generation_item(
+        &self,
+        stock_code: &str,
+        status: &str,
+        attempt: u32,
+        error_message: Option<String>,
+    ) {
+        let mut progress = self
+            .generation_progress
+            .lock()
+            .expect("recommendation generation progress lock poisoned");
+        if let Some(item) = progress.items.iter_mut().find(|item| item.stock_code == stock_code) {
+            item.status = status.into();
+            item.attempt = attempt;
+            item.error_message = error_message;
+        } else {
+            return;
+        }
+        progress.completed_count = progress
+            .items
+            .iter()
+            .filter(|item| matches!(item.status.as_str(), "succeeded" | "failed"))
+            .count() as u32;
+        progress.total_count = progress.items.len() as u32;
+        progress.message = if let Some(item) = progress.items.iter().find(|item| item.stock_code == stock_code) {
+            if status == "failed" {
+                format!("{} 建议生成失败", item.short_name)
+            } else if status == "succeeded" {
+                format!("{} 建议生成完成", item.short_name)
+            } else {
+                format!("正在生成 {} 建议", item.short_name)
+            }
+        } else {
+            "正在生成 AI 建议".into()
+        };
+    }
+
+    pub fn complete_generation_progress(&self, message: String) {
+        let mut progress = self
+            .generation_progress
+            .lock()
+            .expect("recommendation generation progress lock poisoned");
+        progress.completed_count = progress
+            .items
+            .iter()
+            .filter(|item| matches!(item.status.as_str(), "succeeded" | "failed"))
+            .count() as u32;
+        progress.total_count = progress.items.len() as u32;
+        progress.status = "completed".into();
+        progress.message = message;
+    }
+
+    pub fn fail_generation_progress(&self, message: String) {
+        let mut progress = self
+            .generation_progress
+            .lock()
+            .expect("recommendation generation progress lock poisoned");
+        progress.completed_count = progress
+            .items
+            .iter()
+            .filter(|item| matches!(item.status.as_str(), "succeeded" | "failed"))
+            .count() as u32;
+        progress.total_count = progress.items.len() as u32;
+        progress.status = "failed".into();
+        progress.message = message;
     }
 
     pub fn plan_manual(
@@ -1130,6 +1244,16 @@ fn seed_latest_recommendation() -> RecommendationRunDto {
         prompt_version: "recommendation-system-v2".into(),
         user_preference_version: "prefs-seed".into(),
         generated_at: "2026-05-03T17:58:00+08:00".into(),
+    }
+}
+
+fn idle_generation_progress() -> RecommendationGenerationProgressDto {
+    RecommendationGenerationProgressDto {
+        status: "idle".into(),
+        completed_count: 0,
+        total_count: 0,
+        message: "尚未开始 AI 建议生成".into(),
+        items: Vec::new(),
     }
 }
 
@@ -2122,6 +2246,7 @@ fn append_pending_history_row(run: &RecommendationRunDto) -> RecommendationHisto
         stop_loss: run.stop_loss,
         take_profit: run.take_profit.clone(),
         leverage: run.leverage,
+        amount_cny: run.amount_cny,
         confidence_score: run.confidence_score,
         model_name: run.model_name.clone(),
         prompt_version: run.prompt_version.clone(),

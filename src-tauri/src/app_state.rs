@@ -172,6 +172,7 @@ impl AppState {
             state.backtest_service.clone(),
             state.market_data_service.clone(),
             state.settings_service.clone(),
+            state.financial_report_service.clone(),
         );
         spawn_stock_universe_cache_worker(state.market_data_service.clone());
         state

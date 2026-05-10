@@ -12,7 +12,7 @@ import {
   refreshWatchlistTickers,
   searchAShareSymbols,
 } from "../../lib/tauri";
-import { appendWatchlistSymbol } from "../../lib/settings";
+import { appendWatchlistSymbol, removeWatchlistSymbol } from "../../lib/settings";
 
 function isAShare(row: MarketRow) {
   return row.symbol.startsWith("SHSE.") || row.symbol.startsWith("SZSE.");
@@ -112,6 +112,12 @@ export function MarketsPage() {
     setAddStatus(`已添加 ${symbol}，自选行情已刷新。`);
   }
 
+  async function handleRemoveWatchlistSymbol(symbol: string) {
+    await removeWatchlistSymbol(symbol);
+    await refreshWatchlistTickers();
+    await queryClient.invalidateQueries({ queryKey: ["markets"], refetchType: "active" });
+  }
+
   return (
     <section className="page-stack">
       <Card className="watchlist-add-card overflow-hidden">
@@ -200,14 +206,15 @@ export function MarketsPage() {
           <TableShell className="table-shell">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead>代码</TableHead>
+                <TableRow className="border-t-0">
+                  <TableHead className="w-[100px]">代码</TableHead>
                   <TableHead>名称</TableHead>
                   <TableHead>市场</TableHead>
                   <TableHead>最新价</TableHead>
                   <TableHead>涨跌幅</TableHead>
                   <TableHead>成交额</TableHead>
                   <TableHead>更新时间</TableHead>
+                  <TableHead className="w-[60px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -215,17 +222,26 @@ export function MarketsPage() {
                   <TableRow
                   className="market-row"
                   key={row.symbol}
-                  onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}
                 >
-                  <TableCell>{row.symbol}</TableCell>
-                  <TableCell>{row.baseAsset}</TableCell>
-                  <TableCell>{marketLabel(row)}</TableCell>
-                  <TableCell>{formatCny(row.last)}</TableCell>
-                  <TableCell className={row.change24h >= 0 ? "positive-text" : "negative-text"}>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{row.symbol}</TableCell>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{row.baseAsset}</TableCell>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{marketLabel(row)}</TableCell>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{formatCny(row.last)}</TableCell>
+                  <TableCell className={`cursor-pointer ${row.change24h >= 0 ? "positive-text" : "negative-text"}`} onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>
                     {formatPercent(row.change24h)}
                   </TableCell>
-                  <TableCell>{formatCompact(row.volume24h)}</TableCell>
-                  <TableCell>{new Date(row.updatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</TableCell>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{formatCompact(row.volume24h)}</TableCell>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{new Date(row.updatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</TableCell>
+                  <TableCell>
+                    <button
+                      aria-label={`删除 ${row.symbol}`}
+                      className="ghost-button table-action-button"
+                      onClick={(event) => { event.stopPropagation(); handleRemoveWatchlistSymbol(row.symbol); }}
+                      type="button"
+                    >
+                      删除
+                    </button>
+                  </TableCell>
                 </TableRow>
                 ))}
               </TableBody>

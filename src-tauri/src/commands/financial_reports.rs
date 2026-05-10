@@ -2,8 +2,8 @@ use crate::app_state::AppState;
 use crate::errors::CommandResult;
 use crate::jobs::kinds;
 use crate::models::{
-    FinancialReportAnalysisDto, FinancialReportFetchProgressDto, FinancialReportOverviewDto,
-    FinancialReportSnapshotDto,
+    FinancialReportAnalysisDto, FinancialReportAnalysisProgressDto, FinancialReportFetchProgressDto,
+    FinancialReportOverviewDto, FinancialReportSnapshotDto,
 };
 
 #[tauri::command]
@@ -105,6 +105,16 @@ pub async fn get_financial_report_analysis(
 }
 
 #[tauri::command]
+pub async fn get_financial_report_analysis_progress(
+    state: tauri::State<'_, AppState>,
+) -> CommandResult<FinancialReportAnalysisProgressDto> {
+    state
+        .financial_report_service
+        .analysis_progress()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn start_financial_report_analysis(state: tauri::State<'_, AppState>) -> CommandResult<()> {
     let service = state.financial_report_service.clone();
     let settings = state.settings_service.clone();
@@ -117,13 +127,30 @@ pub async fn start_financial_report_analysis(state: tauri::State<'_, AppState>) 
     );
     tauri::async_runtime::spawn(async move {
         match service.analyze_watchlist_reports(&settings).await {
-            Ok(count) => jobs.finish_job(
-                job_id,
-                "done",
-                "财报 AI 分析完成",
-                Some(format!("已完成 {count} 只自选股财报 AI 分析")),
-                None,
-            ),
+            Ok((success_count, failures)) => {
+                let mut message = format!("已完成 {success_count} 只自选股财报 AI 分析");
+                if !failures.is_empty() {
+                    let failed_codes: Vec<&str> = failures.iter().map(|(code, _)| code.as_str()).collect();
+                    message.push_str(&format!("，{} 只失败：{}", failures.len(), failed_codes.join("、")));
+                }
+                jobs.finish_job(
+                    job_id,
+                    "done",
+                    "财报 AI 分析完成",
+                    Some(message),
+                    if failures.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            failures
+                                .iter()
+                                .map(|(code, err)| format!("{code}: {err}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    },
+                );
+            }
             Err(error) => jobs.finish_job(
                 job_id,
                 "failed",

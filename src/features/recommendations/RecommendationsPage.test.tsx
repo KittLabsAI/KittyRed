@@ -4,20 +4,24 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RecommendationsPage } from "./RecommendationsPage";
 
-const { triggerRecommendationMock, deleteRecommendationMock, getRecommendationAuditMock } = vi.hoisted(() => ({
-  triggerRecommendationMock: vi.fn(async () => [{
-    id: "rec-new",
-    status: "completed",
-    hasTrade: false,
-    symbol: "市场扫描",
-    direction: "观望",
-    marketType: "A 股",
-    confidence: 55,
-    riskStatus: "watch",
-    thesis: "暂无符合风险收益比的 A 股机会。",
-    riskDetails: { status: "watch", riskScore: 0, checks: [], modifications: [], blockReasons: [] },
-    generatedAt: "2026-05-06T10:00:00+08:00",
-  }]),
+const {
+  startRecommendationGenerationMock,
+  getRecommendationGenerationProgressMock,
+  deleteRecommendationMock,
+  getRecommendationAuditMock,
+} = vi.hoisted(() => ({
+  startRecommendationGenerationMock: vi.fn(async () => undefined),
+  getRecommendationGenerationProgressMock: vi.fn(async () => ({
+    status: "running",
+    completedCount: 2,
+    totalCount: 3,
+    message: "正在生成 AI 建议",
+    items: [
+      { stockCode: "SHSE.600000", shortName: "浦发银行", status: "succeeded", attempt: 1, errorMessage: null },
+      { stockCode: "SZSE.000001", shortName: "平安银行", status: "running", attempt: 1, errorMessage: null },
+      { stockCode: "SHSE.600519", shortName: "贵州茅台", status: "failed", attempt: 1, errorMessage: "模型超时" },
+    ],
+  })),
   deleteRecommendationMock: vi.fn(async () => undefined),
   getRecommendationAuditMock: vi.fn(async () => ({
     recommendationId: "rec-1",
@@ -33,31 +37,62 @@ const { triggerRecommendationMock, deleteRecommendationMock, getRecommendationAu
     aiRawOutput: "{\"has_trade\":true}",
     aiStructuredOutput: "{\"input_stock_code\":\"SHSE.600000\"}",
     riskResult: "{\"status\":\"approved\"}",
-    marketSnapshot: "{\"rows\":[]}",
+    marketSnapshot: "{\"rows\":[],\"system_prompt\":\"你是A股投资助手\",\"user_prompt\":\"{\\\"all_symbols\\\":[\\\"SHSE.600000\\\",\\\"SZSE.000001\\\"]}\"}",
     accountSnapshot: "{\"account_mode\":\"paper\"}",
   })),
 }));
 
 vi.mock("../../lib/tauri", () => ({
-  getLatestRecommendation: vi.fn(async () => [{
-    id: "rec-live-7",
-    status: "completed",
-    hasTrade: true,
-    symbol: "SHSE.600000",
-    direction: "买入",
-    marketType: "A 股",
-    confidence: 74,
-    riskStatus: "approved",
-    thesis: "量价改善，模拟账户小仓位观察。",
-    entryLow: 8.68,
-    entryHigh: 8.76,
-    stopLoss: 8.45,
-    takeProfit: "9.10 / 9.35",
-    amountCny: 20_000,
-    maxLossCny: 700,
-    riskDetails: { status: "approved", riskScore: 42, checks: [], modifications: [], blockReasons: [] },
-    generatedAt: "2026-05-06T10:00:00+08:00",
-  }]),
+  getLatestRecommendation: vi.fn(async () => [
+    {
+      id: "rec-live-7",
+      status: "completed",
+      hasTrade: true,
+      symbol: "SHSE.600000",
+      stockName: "浦发银行",
+      direction: "买入",
+      marketType: "A 股",
+      confidence: 74,
+      riskStatus: "approved",
+      thesis: "量价改善，模拟账户小仓位观察。",
+      entryLow: 8.68,
+      entryHigh: 8.76,
+      stopLoss: 8.45,
+      takeProfit: "9.10 / 9.35",
+      amountCny: 20_000,
+      maxLossCny: 700,
+      riskDetails: { status: "approved", riskScore: 42, checks: [], modifications: [], blockReasons: [] },
+      generatedAt: "2026-05-06T10:00:00+08:00",
+    },
+    {
+      id: "rec-live-8",
+      status: "completed",
+      hasTrade: true,
+      symbol: "SZSE.000001",
+      stockName: "平安银行",
+      direction: "卖出",
+      marketType: "A 股",
+      confidence: 68,
+      riskStatus: "approved",
+      thesis: "减仓控制波动。",
+      riskDetails: { status: "approved", riskScore: 30, checks: [], modifications: [], blockReasons: [] },
+      generatedAt: "2026-05-06T10:00:00+08:00",
+    },
+    {
+      id: "rec-live-9",
+      status: "completed",
+      hasTrade: false,
+      symbol: "SHSE.600519",
+      stockName: "贵州茅台",
+      direction: "观望",
+      marketType: "A 股",
+      confidence: 55,
+      riskStatus: "watch",
+      thesis: "等待更好的风险收益比。",
+      riskDetails: { status: "watch", riskScore: 0, checks: [], modifications: [], blockReasons: [] },
+      generatedAt: "2026-05-06T10:00:00+08:00",
+    },
+  ]),
   listRecommendationHistory: vi.fn(async () => [
     {
       id: "rec-1",
@@ -142,8 +177,33 @@ vi.mock("../../lib/tauri", () => ({
       venues: ["akshare:xueqiu"],
       updatedAt: "2026-05-06T10:00:00+08:00",
     },
+    {
+      symbol: "SZSE.000001",
+      baseAsset: "平安银行",
+      marketType: "A 股",
+      marketSizeTier: "large",
+      last: 11.34,
+      change24h: -0.31,
+      volume24h: 1_050_000_000,
+      spreadBps: 2,
+      venues: ["akshare:xueqiu"],
+      updatedAt: "2026-05-06T10:00:00+08:00",
+    },
+    {
+      symbol: "SHSE.600519",
+      baseAsset: "贵州茅台",
+      marketType: "A 股",
+      marketSizeTier: "large",
+      last: 1668,
+      change24h: 0.24,
+      volume24h: 820_000_000,
+      spreadBps: 2,
+      venues: ["akshare:xueqiu"],
+      updatedAt: "2026-05-06T10:00:00+08:00",
+    },
   ]),
-  triggerRecommendation: triggerRecommendationMock,
+  startRecommendationGeneration: startRecommendationGenerationMock,
+  getRecommendationGenerationProgress: getRecommendationGenerationProgressMock,
   deleteRecommendation: deleteRecommendationMock,
   getRecommendationAudit: getRecommendationAuditMock,
 }));
@@ -165,6 +225,12 @@ describe("RecommendationsPage", () => {
     expect(screen.getByRole("button", { name: "生成AI建议" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "咨询AI助手" })).toBeInTheDocument();
     expect(screen.queryByText("交易计划")).not.toBeInTheDocument();
+    expect(await screen.findByText(/买入：浦发银行/)).toBeInTheDocument();
+    expect(screen.getByText(/卖出：平安银行/)).toBeInTheDocument();
+    expect(screen.getByText(/观察：贵州茅台/)).toBeInTheDocument();
+    expect(screen.getByText("正在生成 AI 建议")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "AI投资建议进度" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "浦发银行 建议状态" })).toBeInTheDocument();
     expect(await screen.findByText("输入浦发银行")).toBeInTheDocument();
     expect(screen.getByText("输入平安银行")).toBeInTheDocument();
     expect(screen.getByText("10分钟")).toBeInTheDocument();
@@ -189,7 +255,7 @@ describe("RecommendationsPage", () => {
     expect(await screen.findByText("分页测试建议 9")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成AI建议" }));
-    expect(triggerRecommendationMock).toHaveBeenCalled();
+    expect(startRecommendationGenerationMock).toHaveBeenCalled();
   });
 
   it("filters recommendation history by trade direction", async () => {
@@ -221,6 +287,9 @@ describe("RecommendationsPage", () => {
     expect(await screen.findByText("AI 推荐详情")).toBeInTheDocument();
     expect(screen.getAllByText("审查").length).toBeGreaterThan(0);
     expect(getRecommendationAuditMock).toHaveBeenCalledWith("rec-1");
+    expect(screen.getByText("AI 用户提示词")).toBeInTheDocument();
+    expect(screen.getByText("你是A股投资助手")).toBeInTheDocument();
+    expect(screen.getByText("{\"all_symbols\":[\"SHSE.600000\",\"SZSE.000001\"]}")).toBeInTheDocument();
 
     const deleteButtons = screen.getAllByRole("button", { name: "删除 SHSE.600000 的建议" });
     await user.click(deleteButtons[0]);

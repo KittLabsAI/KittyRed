@@ -1,8 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import userEvent from "@testing-library/user-event";
 import { render, screen } from "@testing-library/react";
-import { HashRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./DashboardPage";
+
+const { triggerRecommendationMock } = vi.hoisted(() => ({
+  triggerRecommendationMock: vi.fn(async () => []),
+}));
 
 vi.mock("../../lib/tauri", () => ({
   listMarkets: vi.fn(async () => []),
@@ -15,28 +20,21 @@ vi.mock("../../lib/tauri", () => ({
     riskSummary: "模拟账户当前有 1 个持仓。",
     exchanges: [{ name: "人民币现金", equity: 1_002_400, weight: 100 }],
   })),
-  triggerRecommendation: vi.fn(async () => [{
-    id: "rec-1",
-    status: "completed",
-    hasTrade: false,
-    symbol: "SHSE.600000",
-    direction: "观察",
-    confidence: 0,
-    riskStatus: "watch",
-    thesis: "暂无建议",
-    riskDetails: { status: "watch", riskScore: 0, checks: [], modifications: [], blockReasons: [] },
-    generatedAt: "2026-05-06T10:00:00+08:00",
-  }]),
+  triggerRecommendation: triggerRecommendationMock,
   listAnalyzeJobs: vi.fn(async () => []),
 }));
 
 describe("DashboardPage", () => {
-  it("renders the Chinese A-share dashboard without crypto or CEX copy", async () => {
+  it("renders the Chinese A-share dashboard and routes AI analysis to recommendations", async () => {
+    const user = userEvent.setup();
     const { container } = render(
       <QueryClientProvider client={new QueryClient()}>
-        <HashRouter>
-          <DashboardPage />
-        </HashRouter>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/recommendations" element={<div>推荐页已打开</div>} />
+          </Routes>
+        </MemoryRouter>
       </QueryClientProvider>,
     );
 
@@ -56,5 +54,9 @@ describe("DashboardPage", () => {
     expect(screen.queryByText("最新建议")).not.toBeInTheDocument();
     expect(await screen.findByText("浦发银行")).toBeInTheDocument();
     expect(screen.queryByText(/BTC\/USDT|USDT|akshare|akshare|券商模拟|策略账户|风控账户|现金账户/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "AI 分析" }));
+    expect(await screen.findByText("推荐页已打开")).toBeInTheDocument();
+    expect(triggerRecommendationMock).not.toHaveBeenCalled();
   });
 });

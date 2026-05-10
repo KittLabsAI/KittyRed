@@ -110,6 +110,7 @@ pub async fn start_backtest(
         state.backtest_service.clone(),
         state.settings_service.clone(),
         state.market_data_service.clone(),
+        state.financial_report_service.clone(),
         backtest_id,
     );
     Ok(())
@@ -124,6 +125,7 @@ pub async fn start_generate_backtest_signals(
         state.backtest_service.clone(),
         state.settings_service.clone(),
         state.market_data_service.clone(),
+        state.financial_report_service.clone(),
         backtest_id,
     );
     Ok(())
@@ -145,11 +147,17 @@ fn start_generate_backtest_signals_inner(
     service: crate::backtest::BacktestService,
     settings_service: crate::settings::SettingsService,
     market_data_service: crate::market::MarketDataService,
+    financial_report_service: crate::financial_reports::FinancialReportService,
     backtest_id: String,
 ) {
     tauri::async_runtime::spawn(async move {
         let _ = service
-            .generate_signals(&backtest_id, &settings_service, &market_data_service)
+            .generate_signals(
+                &backtest_id,
+                &settings_service,
+                &market_data_service,
+                &financial_report_service,
+            )
             .await;
     });
 }
@@ -221,6 +229,7 @@ pub fn resume_pending_backtest_jobs(
     service: crate::backtest::BacktestService,
     market_data_service: crate::market::MarketDataService,
     settings_service: crate::settings::SettingsService,
+    financial_report_service: crate::financial_reports::FinancialReportService,
 ) {
     if let Ok(dataset_ids) = service.active_fetch_dataset_ids() {
         for dataset_id in dataset_ids {
@@ -245,6 +254,7 @@ pub fn resume_pending_backtest_jobs(
                     service.clone(),
                     settings_service.clone(),
                     market_data_service.clone(),
+                    financial_report_service.clone(),
                     backtest_id,
                 );
             }

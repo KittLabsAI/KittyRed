@@ -416,11 +416,39 @@ textarea:focus-visible,
 }
 
 .recommendation-hero-panel {
-  align-items: center;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.recommendation-hero-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  min-width: 0;
+}
+
+.recommendation-hero-panel__header > :first-child {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.recommendation-summary-text {
+  white-space: pre-line;
 }
 
 .recommendation-hero-actions {
-  justify-content: center;
+  justify-content: flex-start;
+  margin-left: auto;
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+.recommendation-progress {
+  width: 100%;
+  grid-column: 1 / -1;
 }
 
 .recommendation-history-panel {
@@ -1514,6 +1542,56 @@ tbody td {
   min-width: 460px;
 }
 
+.backtest-holdings-table table {
+  min-width: 1600px;
+}
+
+.backtest-holdings-table th:nth-child(3),
+.backtest-holdings-table td:nth-child(3) {
+  min-width: 150px;
+}
+
+.backtest-holdings-table th:nth-child(4),
+.backtest-holdings-table td:nth-child(4),
+.backtest-holdings-table th:nth-child(5),
+.backtest-holdings-table td:nth-child(5),
+.backtest-holdings-table th:nth-child(6),
+.backtest-holdings-table td:nth-child(6),
+.backtest-holdings-table th:nth-child(7),
+.backtest-holdings-table td:nth-child(7),
+.backtest-holdings-table th:nth-child(8),
+.backtest-holdings-table td:nth-child(8),
+.backtest-holdings-table th:nth-child(9),
+.backtest-holdings-table td:nth-child(9),
+.backtest-holdings-table th:nth-child(10),
+.backtest-holdings-table td:nth-child(10) {
+  min-width: 120px;
+}
+
+.backtest-trade-table th:nth-child(3),
+.backtest-trade-table td:nth-child(3) {
+  min-width: 130px;
+  max-width: 160px;
+}
+
+.backtest-trade-table th:nth-child(4),
+.backtest-trade-table td:nth-child(4) {
+  min-width: 90px;
+  max-width: 120px;
+}
+
+.backtest-trade-table th:nth-child(5),
+.backtest-trade-table td:nth-child(5) {
+  min-width: 150px;
+  max-width: 200px;
+}
+
+.backtest-trade-table th:nth-child(6),
+.backtest-trade-table td:nth-child(6) {
+  min-width: 110px;
+  max-width: 160px;
+}
+
 .backtest-table-actions {
   display: flex;
   gap: 8px;
@@ -1525,6 +1603,10 @@ tbody td {
   grid-template-columns: repeat(6, minmax(130px, 1fr));
   gap: 10px;
   margin-bottom: 20px;
+}
+
+.backtest-summary-strip--holdings {
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
 }
 
 .backtest-summary-strip .metric-card {
@@ -1544,10 +1626,10 @@ tbody td {
   position: relative;
 }
 
-.backtest-curve__plot svg {
+.backtest-curve__chart {
   display: block;
   width: 100%;
-  height: 180px;
+  height: 260px;
   border: 1px solid var(--border);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.025);
@@ -2230,6 +2312,10 @@ tbody td {
   gap: 8px;
 }
 
+.financial-progress--analysis {
+  gap: 10px;
+}
+
 .financial-progress__meta {
   display: flex;
   align-items: center;
@@ -2362,6 +2448,289 @@ tbody td {
   color: var(--text-muted);
 }
 
+.financial-analysis-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 30px;
+}
+
+.financial-analysis-status-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 12px 10px;
+  margin-top: 22px;
+}
+
+.financial-analysis-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(237, 243, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.financial-analysis-status strong {
+  overflow: hidden;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.financial-analysis-status__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+}
+
+.financial-analysis-status--succeeded {
+  border-color: rgba(114, 240, 203, 0.18);
+}
+
+.financial-analysis-status--succeeded .financial-analysis-status__icon {
+  color: #72f0cb;
+}
+
+.financial-analysis-status--running .financial-analysis-status__icon {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.financial-analysis-status--retrying {
+  border-color: rgba(255, 210, 117, 0.18);
+}
+
+.financial-analysis-status--retrying .financial-analysis-status__icon {
+  color: #ffd275;
+}
+
+.financial-analysis-status--failed {
+  border-color: rgba(255, 138, 128, 0.22);
+}
+
+.financial-analysis-status--failed .financial-analysis-status__icon {
+  color: #ff8a80;
+}
+
+.financial-analysis-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(120px, 0.65fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  text-align: left;
+}
+
+.financial-analysis-row:hover {
+  border-color: rgba(100, 180, 255, 0.35);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.financial-analysis-row__identity,
+.financial-analysis-row__score,
+.financial-analysis-row__time {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.financial-analysis-row__identity strong,
+.financial-analysis-row__score strong {
+  font-size: 1rem;
+}
+
+.financial-analysis-row__identity span,
+.financial-analysis-row__time span,
+.financial-analysis-row__score span,
+.financial-analysis-row__time em {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
+.financial-analysis-row__score strong {
+  color: var(--accent);
+}
+
+.financial-report-modal {
+  width: min(1100px, calc(100vw - 32px));
+}
+
+.financial-report-modal__body {
+  display: grid;
+  gap: 18px;
+}
+
+.financial-report-ai-block {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.financial-report-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.financial-report-score span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.financial-report-score strong {
+  color: var(--accent);
+  font-size: 2rem;
+  font-weight: 800;
+}
+
+.financial-report-chart-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.9fr);
+  gap: 16px;
+}
+
+.financial-report-chart-block__item {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(237, 243, 255, 0.08);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(143, 220, 255, 0.04)),
+    rgba(255, 255, 255, 0.02);
+}
+
+.financial-report-chart-block__item h3 {
+  margin: 0;
+  color: rgba(237, 243, 255, 0.72);
+  font-size: 0.86rem;
+}
+
+.financial-report-text-section {
+  display: grid;
+  gap: 8px;
+}
+
+.financial-report-text-section h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.financial-report-text-section p {
+  margin: 0;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.financial-report-number {
+  color: #ff5c5c;
+  font-weight: 700;
+}
+
+.financial-report-statement-grid,
+.financial-report-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.financial-report-statement-card,
+.financial-report-chart-card {
+  display: grid;
+  height: 100%;
+  align-content: start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.financial-report-statement-card__header,
+.financial-report-chart-card__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.financial-report-statement-card__header h3,
+.financial-report-chart-card__header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.financial-report-statement-card__header span,
+.financial-report-chart-card__header span {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.financial-report-raw-table {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  align-content: start;
+}
+
+.financial-report-raw-table div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.financial-report-raw-table dt {
+  flex: 1 1 auto;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.financial-report-raw-table dd {
+  margin: 0;
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 0.9rem;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.financial-report-score-chart {
+  width: 100%;
+  height: 320px;
+}
+
+.financial-report-radar {
+  width: 100%;
+  height: 320px;
+}
+
+.financial-report-metric-chart {
+  width: 100%;
+  height: 220px;
+}
+
 .financial-analysis-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2446,7 +2815,8 @@ tbody td {
   position: fixed;
   top: 0;
   right: 0;
-  width: min(480px, 94vw);
+  min-width: min(400px, 94vw);
+  max-width: min(860px, 100vw);
   height: 100vh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -2454,6 +2824,15 @@ tbody td {
   background: var(--panel-strong);
   box-shadow: -14px 0 42px rgba(0, 0, 0, 0.26);
   z-index: 20;
+}
+
+.assistant-drawer__resize-handle {
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
 }
 
 .assistant-drawer__header {
@@ -3407,8 +3786,16 @@ tbody td {
 
   .financial-toolbar,
   .financial-summary-band,
-  .financial-analysis-grid {
+  .financial-analysis-grid,
+  .financial-analysis-row,
+  .financial-report-chart-block,
+  .financial-report-statement-grid,
+  .financial-report-chart-grid {
     grid-template-columns: 1fr;
+  }
+
+  .financial-analysis-status-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .financial-actions {
@@ -3453,6 +3840,16 @@ tbody td {
 @media (max-width: 640px) {
   .content {
     padding: 18px 14px 28px;
+  }
+
+  .financial-analysis-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .financial-report-score-chart,
+  .financial-report-radar,
+  .financial-report-metric-chart {
+    height: 260px;
   }
 
   .sidebar {

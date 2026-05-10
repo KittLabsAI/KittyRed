@@ -31,7 +31,7 @@
 ## 开发边界
 
 - 保持 Tauri commands 薄；行情、推荐、模拟交易、组合、助手、设置和信号逻辑放回对应业务模块。
-- 前端桥接逻辑集中在 `src/lib/tauri.ts`、`src/lib/settings.ts` 和相关类型文件；不要在页面组件里散落 raw `invoke()`。
+- 前端桥接逻辑集中在 `src/lib/tauri.ts`、`src/lib/settings.ts`、`src/lib/akshare.ts` 和相关类型文件；不要在页面组件里散落 raw `invoke()`。
 - 修改命令、DTO 或共享类型时，同步更新 Rust models、TypeScript types、调用方和测试。
 - 不要手改生成物或依赖产物：`dist/`、`node_modules/`、`src-tauri/target/`、`src-tauri/gen/schemas/`。
 - 只做用户要求的最小改动；不要顺手重构无关代码。
@@ -48,7 +48,7 @@
 
 ## 高价值入口
 
-- UI 桥接：`src/lib/tauri.ts`、`src/lib/settings.ts`、`src/lib/types.ts`
+- UI 桥接：`src/lib/tauri.ts`、`src/lib/settings.ts`、`src/lib/akshare.ts`、`src/lib/types.ts`
 - AKShare 适配：`backend/akshare_adapter.py`、`backend/akshare_service.py`、`src-tauri/src/market/akshare.rs`
 - 缓存和行情服务：`src-tauri/src/market/cache.rs`、`src-tauri/src/market/mod.rs`、`src-tauri/src/commands/market.rs`
 - 启动和后台刷新：`src-tauri/src/app_state.rs`

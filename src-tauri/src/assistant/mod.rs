@@ -235,6 +235,18 @@ mod tests {
             .save_analysis(
                 "SHSE.600000",
                 &revision,
+                &crate::models::FinancialReportCategoryScoresDto {
+                    revenue_quality: 7,
+                    gross_margin: 8,
+                    net_profit_return: 10,
+                    earnings_manipulation: 4,
+                    solvency: 12,
+                    cash_flow: 13,
+                    growth: 9,
+                    research_capital: 7,
+                    operating_efficiency: 8,
+                    asset_quality: 4,
+                },
                 "收入和利润稳定",
                 "现金流改善",
                 "费用率上升",
@@ -260,7 +272,14 @@ mod tests {
 
         assert_eq!(payload["ok"], json!(true));
         assert_eq!(payload["stockCode"], json!("SHSE.600000"));
-        assert_eq!(payload["analysis"]["关键信息总结"], json!("收入和利润稳定"));
+        assert_eq!(
+            payload["financialReportAnalysis"]["key_summary"],
+            json!("收入和利润稳定")
+        );
+        assert_eq!(
+            payload["financialReportAnalysis"]["radar_scores"]["profitability"],
+            json!(8.2)
+        );
         assert!(payload.get("rawSections").is_none());
         assert_eq!(payload["message"], json!("已读取本地缓存的财报 AI 分析结论。"));
 
@@ -299,6 +318,7 @@ mod tests {
         let payload: Value = serde_json::from_str(&result).unwrap();
 
         assert_eq!(payload["ok"], json!(false));
+        assert!(payload.get("financialReportAnalysis").is_none());
         assert!(payload.get("rawSections").is_none());
         assert!(payload["message"]
             .as_str()
@@ -1474,12 +1494,8 @@ async fn execute_tool(
                 Some(analysis) => Ok(json!({
                     "ok": true,
                     "stockCode": analysis.stock_code,
-                    "analysis": {
-                        "关键信息总结": analysis.key_summary,
-                        "财报正向因素": analysis.positive_factors,
-                        "财报负向因素": analysis.negative_factors,
-                        "财报造假嫌疑点": analysis.fraud_risk_points
-                    },
+                    "financialReportAnalysis": financial_report_service
+                        .shared_ai_financial_context(&analysis.stock_code)?,
                     "sourceRevision": analysis.source_revision,
                     "generatedAt": analysis.generated_at,
                     "message": "已读取本地缓存的财报 AI 分析结论。"
@@ -1706,6 +1722,7 @@ fn recommendation_history_json(row: &crate::models::RecommendationHistoryRowDto)
         "stopLoss": row.stop_loss,
         "takeProfit": row.take_profit,
         "confidenceScore": row.confidence_score,
+        "amountCny": row.amount_cny,
         "executed": row.executed,
         "modified": row.modified,
         "outcome": row.outcome,

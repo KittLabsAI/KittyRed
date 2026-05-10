@@ -53,6 +53,7 @@ mod tests {
         let enabled = serde_json::to_string(&openai_tool_schemas_for_runtime(&runtime)).unwrap();
         assert!(enabled.contains("financial_report_info"));
         assert!(enabled.contains("财报 AI 分析结论"));
+        assert!(enabled.contains("雷达评分"));
         assert!(!enabled.contains("原始财报数据"));
     }
 }
@@ -250,7 +251,7 @@ fn tool_specs(include_financial_report: bool) -> Vec<ToolSpec> {
     if include_financial_report {
         specs.push(ToolSpec {
             name: "financial_report_info",
-            description: "读取本地缓存的 A 股财报 AI 分析结论，不触发 AKShare 拉取或 AI 分析。",
+            description: "读取本地缓存的 A 股财报 AI 分析结论和雷达评分，不触发 AKShare 拉取或 AI 分析。",
             parameters: json!({
                 "type": "object",
                 "properties": {

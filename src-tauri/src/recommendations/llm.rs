@@ -6,12 +6,11 @@ mod tests {
         build_market_prompt, build_system_prompt, endpoint_url, extract_anthropic_content,
         extract_openai_content, new_recommendation_id, normalize_model_recommendation,
         parse_model_recommendation, stock_agent_fetch_plan_labels, PositionContext,
-        PromptKlineContext, StockAgentData, FinancialAnalysisPromptContext,
-        build_stock_agent_market_prompt,
+        PromptKlineContext, StockAgentData, build_stock_agent_market_prompt,
     };
     use crate::models::{
-        default_assistant_system_prompt, MarketListRow, RuntimeNotificationSettingsDto,
-        RuntimeSettingsDto,
+        default_assistant_system_prompt, AiFinancialReportContextDto, MarketListRow,
+        RuntimeNotificationSettingsDto, RuntimeSettingsDto,
     };
 
     #[test]
@@ -243,11 +242,19 @@ mod tests {
         let mut runtime = runtime_settings();
         runtime.use_financial_report_data = true;
         let mut agent_data = StockAgentData::default();
-        agent_data.financial_report_analysis = Some(FinancialAnalysisPromptContext {
+        agent_data.financial_report_analysis = Some(AiFinancialReportContextDto {
             key_summary: "收入稳定增长".into(),
             positive_factors: "经营现金流改善".into(),
             negative_factors: "费用率上升".into(),
             fraud_risk_points: "暂无明显异常".into(),
+            radar_scores: crate::models::FinancialReportRadarScoresDto {
+                profitability: 8.2,
+                authenticity: 8.5,
+                cash_generation: 8.7,
+                safety: 8.0,
+                growth_potential: 8.4,
+                operating_efficiency: 8.1,
+            },
         });
         let mut rows = sample_rows();
         let row = rows.remove(0);
@@ -262,7 +269,14 @@ mod tests {
             financial.get("key_summary").and_then(serde_json::Value::as_str),
             Some("收入稳定增长")
         );
+        assert_eq!(
+            financial
+                .pointer("/radar_scores/profitability")
+                .and_then(serde_json::Value::as_f64),
+            Some(8.2)
+        );
         assert!(prompt.contains("fraud_risk_points"));
+        assert!(prompt.contains("radar_scores"));
         assert!(!prompt.contains("raw_sections"));
     }
 
@@ -271,11 +285,19 @@ mod tests {
         let mut runtime = runtime_settings();
         runtime.use_financial_report_data = false;
         let mut agent_data = StockAgentData::default();
-        agent_data.financial_report_analysis = Some(FinancialAnalysisPromptContext {
+        agent_data.financial_report_analysis = Some(AiFinancialReportContextDto {
             key_summary: "收入稳定增长".into(),
             positive_factors: "经营现金流改善".into(),
             negative_factors: "费用率上升".into(),
             fraud_risk_points: "暂无明显异常".into(),
+            radar_scores: crate::models::FinancialReportRadarScoresDto {
+                profitability: 8.2,
+                authenticity: 8.5,
+                cash_generation: 8.7,
+                safety: 8.0,
+                growth_potential: 8.4,
+                operating_efficiency: 8.1,
+            },
         });
         let mut rows = sample_rows();
         let row = rows.remove(0);
@@ -688,13 +710,15 @@ use time::OffsetDateTime;
 
 use crate::market::MarketDataService;
 use crate::models::{
-    default_assistant_system_prompt, default_recommendation_system_prompt, ConnectionTestResultDto,
-    MarketListRow, ModelConnectionTestPayloadDto, RecommendationRunDto, RiskDecisionDto,
+    default_assistant_system_prompt, default_recommendation_system_prompt,
+    AiFinancialReportContextDto, ConnectionTestResultDto, MarketListRow,
+    ModelConnectionTestPayloadDto, RecommendationRunDto, RiskDecisionDto,
     RuntimeNotificationSettingsDto, RuntimeSettingsDto, SymbolRecommendationDto,
 };
 use crate::recommendations::risk_engine::{
     evaluate_plan, risk_settings_from_runtime, CandidatePlan,
 };
+use crate::recommendations::RecommendationService;
 use crate::settings::SettingsService;
 
 type PromptCandles = HashMap<String, PromptKlineContext>;
@@ -710,16 +734,8 @@ struct StockAgentData {
     stock_info: Value,
     bid_ask: Value,
     kline_data: PromptKlineContext,
-    financial_report_analysis: Option<FinancialAnalysisPromptContext>,
+    financial_report_analysis: Option<AiFinancialReportContextDto>,
     messages: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct FinancialAnalysisPromptContext {
-    pub key_summary: String,
-    pub positive_factors: String,
-    pub negative_factors: String,
-    pub fraud_risk_points: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -737,6 +753,7 @@ struct StockAgentAudit {
     stock_code: String,
     stock_name: String,
     ok: bool,
+    user_prompt: Option<String>,
     raw_output: Option<String>,
     structured_output: Option<ModelRecommendation>,
     normalized_run: Option<RecommendationRunDto>,
@@ -813,12 +830,13 @@ struct ModelRecommendation {
 pub async fn generate_trade_plan(
     settings_service: &SettingsService,
     _market_data_service: &MarketDataService,
+    recommendation_service: &RecommendationService,
     market_rows: &[MarketListRow],
     account_equity_usdt: f64,
     symbol: Option<&str>,
     enabled_exchanges: &[String],
     positions: &[PositionContext],
-    financial_analyses: &HashMap<String, FinancialAnalysisPromptContext>,
+    financial_analyses: &HashMap<String, AiFinancialReportContextDto>,
 ) -> anyhow::Result<Vec<GeneratedTradePlan>> {
     if market_rows.is_empty() {
         bail!("No live market data was available for the enabled exchanges.");
@@ -864,12 +882,14 @@ pub async fn generate_trade_plan(
         let api_key = api_key.clone();
         let system_prompt = system_prompt.clone();
         let decision_rows = decision_rows.clone();
+        let recommendation_service = recommendation_service.clone();
         let financial_analysis = financial_analyses.get(&row.symbol).cloned();
         let position_context = positions
             .iter()
             .find(|position| position.symbol == row.symbol)
             .cloned();
         async move {
+            recommendation_service.update_generation_item(&row.symbol, "running", 1, None);
             let mut agent_data = fetch_stock_agent_data(&row.symbol, &runtime).await;
             agent_data.financial_report_analysis = financial_analysis;
             let user_prompt = build_stock_agent_market_prompt(
@@ -884,10 +904,17 @@ pub async fn generate_trade_plan(
             let content = match content {
                 Ok(value) => value,
                 Err(error) => {
+                    recommendation_service.update_generation_item(
+                        &row.symbol,
+                        "failed",
+                        1,
+                        Some(format!("LLM 子任务失败：{error}")),
+                    );
                     return StockAgentAudit {
                         stock_code: row.symbol,
                         stock_name: row.base_asset,
                         ok: false,
+                        user_prompt: Some(user_prompt),
                         raw_output: None,
                         structured_output: None,
                         normalized_run: None,
@@ -898,10 +925,17 @@ pub async fn generate_trade_plan(
             let parsed = match parse_model_recommendation(&content) {
                 Ok(value) => value,
                 Err(error) => {
+                    recommendation_service.update_generation_item(
+                        &row.symbol,
+                        "failed",
+                        1,
+                        Some(format!("AI 输出解析失败：{error}")),
+                    );
                     return StockAgentAudit {
                         stock_code: row.symbol,
                         stock_name: row.base_asset,
                         ok: false,
+                        user_prompt: Some(user_prompt),
                         raw_output: Some(content),
                         structured_output: None,
                         normalized_run: None,
@@ -918,24 +952,37 @@ pub async fn generate_trade_plan(
                 position_context.as_ref(),
             );
             match run {
-                Ok(run) => StockAgentAudit {
-                    stock_code: row.symbol,
-                    stock_name: row.base_asset,
-                    ok: true,
-                    raw_output: Some(content),
-                    structured_output: Some(parsed),
-                    normalized_run: Some(run),
-                    error: None,
-                },
-                Err(error) => StockAgentAudit {
-                    stock_code: row.symbol,
-                    stock_name: row.base_asset,
-                    ok: false,
-                    raw_output: Some(content),
-                    structured_output: Some(parsed),
-                    normalized_run: None,
-                    error: Some(format!("AI 建议归一化失败：{error}")),
-                },
+                Ok(run) => {
+                    recommendation_service.update_generation_item(&row.symbol, "succeeded", 1, None);
+                    StockAgentAudit {
+                        stock_code: row.symbol,
+                        stock_name: row.base_asset,
+                        ok: true,
+                        user_prompt: Some(user_prompt),
+                        raw_output: Some(content),
+                        structured_output: Some(parsed),
+                        normalized_run: Some(run),
+                        error: None,
+                    }
+                }
+                Err(error) => {
+                    recommendation_service.update_generation_item(
+                        &row.symbol,
+                        "failed",
+                        1,
+                        Some(format!("AI 建议归一化失败：{error}")),
+                    );
+                    StockAgentAudit {
+                        stock_code: row.symbol,
+                        stock_name: row.base_asset,
+                        ok: false,
+                        user_prompt: Some(user_prompt),
+                        raw_output: Some(content),
+                        structured_output: Some(parsed),
+                        normalized_run: None,
+                        error: Some(format!("AI 建议归一化失败：{error}")),
+                    }
+                }
             }
         }
     });
@@ -981,7 +1028,7 @@ pub async fn generate_trade_plan(
                     "error": agent.error,
                 }))?,
                 system_prompt: system_prompt.clone(),
-                user_prompt: format!("单股 subagent：{} {}", agent.stock_code, agent.stock_name),
+                user_prompt: agent.user_prompt.clone().unwrap_or_default(),
             })
         })
         .collect()
@@ -993,6 +1040,7 @@ pub async fn generate_trade_plan_with_historical_context(
     decision_rows: &[MarketListRow],
     account_equity_usdt: f64,
     position_context: Option<&PositionContext>,
+    financial_report_analysis: Option<AiFinancialReportContextDto>,
     stock_info: Value,
     bid_ask: Option<Value>,
     kline_bars: HashMap<String, Vec<[f64; 4]>>,
@@ -1006,6 +1054,7 @@ pub async fn generate_trade_plan_with_historical_context(
     let mut agent_data = StockAgentData::default();
     agent_data.stock_info = stock_info;
     agent_data.bid_ask = bid_ask.unwrap_or_else(|| json!({}));
+    agent_data.financial_report_analysis = financial_report_analysis;
     for (interval, bars) in kline_bars {
         agent_data.kline_data.bars.insert(
             interval,

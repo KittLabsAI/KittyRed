@@ -760,6 +760,22 @@ export async function appendWatchlistSymbol(
   return normalizePersistedSettings(persisted);
 }
 
+export async function removeWatchlistSymbol(
+  symbol: string,
+): Promise<SettingsFormData> {
+  const current = normalizePersistedSettings(await readPersistedMetadata());
+  const next = {
+    ...current,
+    watchlistSymbols: current.watchlistSymbols.filter((s) => s !== symbol),
+  };
+  const persisted = toPersistedSettings(next);
+
+  await writePersistedMetadata(persisted);
+  await syncRuntimeSettingsSnapshot(persisted);
+
+  return normalizePersistedSettings(persisted);
+}
+
 export async function testModelConnection(
   draft: ModelConnectionDraft,
 ): Promise<ConnectionTestResult> {

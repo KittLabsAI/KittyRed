@@ -28,13 +28,7 @@ export function formatDateTime(value?: string | number | null) {
     return "N/A";
   }
 
-  const year = date.getFullYear();
-  const month = padDatePart(date.getMonth() + 1);
-  const day = padDatePart(date.getDate());
-  const hours = padDatePart(date.getHours());
-  const minutes = padDatePart(date.getMinutes());
-  const seconds = padDatePart(date.getSeconds());
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  return formatBeijingDateTime(date);
 }
 
 function parseDateTimeInput(value: string | number) {
@@ -59,6 +53,18 @@ function normalizeEpoch(value: number) {
   return value < 1_000_000_000_000 ? value * 1_000 : value;
 }
 
-function padDatePart(value: number) {
-  return String(value).padStart(2, "0");
+function formatBeijingDateTime(date: Date) {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(date);
+  const valueOf = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${valueOf("year")}-${valueOf("month")}-${valueOf("day")} ${valueOf("hour")}:${valueOf("minute")}:${valueOf("second")}`;
 }

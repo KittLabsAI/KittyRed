@@ -307,6 +307,7 @@ export interface RecommendationHistoryRow {
   stopLoss?: number;
   takeProfit?: string;
   leverage?: number;
+  amountCny?: number;
   confidence?: number;
   modelName?: string;
   promptVersion?: string;
@@ -337,6 +338,22 @@ export interface RecommendationAudit {
   riskResult: string;
   marketSnapshot: string;
   accountSnapshot: string;
+}
+
+export interface RecommendationGenerationProgressItem {
+  stockCode: string;
+  shortName: string;
+  status: string;
+  attempt: number;
+  errorMessage?: string;
+}
+
+export interface RecommendationGenerationProgress {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: RecommendationGenerationProgressItem[];
 }
 
 export interface BacktestDataset {
@@ -394,6 +411,10 @@ export interface FinancialReportSection {
 
 export interface FinancialReportAnalysis {
   stockCode: string;
+  stockName?: string | null;
+  financialScore: number;
+  categoryScores: FinancialReportCategoryScores;
+  radarScores: FinancialReportRadarScores;
   sourceRevision: string;
   keySummary: string;
   positiveFactors: string;
@@ -405,12 +426,50 @@ export interface FinancialReportAnalysis {
   stale: boolean;
 }
 
+export interface FinancialReportCategoryScores {
+  revenueQuality: number;
+  grossMargin: number;
+  netProfitReturn: number;
+  earningsManipulation: number;
+  solvency: number;
+  cashFlow: number;
+  growth: number;
+  researchCapital: number;
+  operatingEfficiency: number;
+  assetQuality: number;
+}
+
+export interface FinancialReportRadarScores {
+  profitability: number;
+  authenticity: number;
+  cashGeneration: number;
+  safety: number;
+  growthPotential: number;
+  operatingEfficiency: number;
+}
+
 export interface FinancialReportSnapshot {
   stockCode: string;
+  stockName?: string | null;
   sections: FinancialReportSection[];
   sourceRevision: string;
   refreshedAt?: string | null;
+  metricSeries: FinancialReportMetricSeries[];
   analysis?: FinancialReportAnalysis | null;
+}
+
+export interface FinancialReportMetricPoint {
+  reportDate: string;
+  value: number;
+  yoy?: number | null;
+  qoq?: number | null;
+}
+
+export interface FinancialReportMetricSeries {
+  metricKey: string;
+  metricLabel: string;
+  unit: string;
+  points: FinancialReportMetricPoint[];
 }
 
 export interface FinancialReportSectionSummary {
@@ -435,6 +494,22 @@ export interface FinancialReportFetchProgress {
   totalSections: number;
   message: string;
   errorMessage?: string | null;
+}
+
+export interface FinancialReportAnalysisProgressItem {
+  stockCode: string;
+  shortName: string;
+  status: "pending" | "running" | "retrying" | "succeeded" | "failed";
+  attempt: number;
+  errorMessage?: string | null;
+}
+
+export interface FinancialReportAnalysisProgress {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: FinancialReportAnalysisProgressItem[];
 }
 
 export interface BacktestRun {
@@ -505,6 +580,19 @@ export interface BacktestTrade {
   pnlPercent: number;
 }
 
+export interface BacktestOpenPosition {
+  signalId: string;
+  symbol: string;
+  stockName?: string;
+  entryPrice: number;
+  entryAt: string;
+  markPrice: number;
+  amountCny: number;
+  holdingPeriods: number;
+  unrealizedPnlCny: number;
+  unrealizedPnlPercent: number;
+}
+
 export interface BacktestSummary {
   backtestId: string;
   totalSignals: number;
@@ -515,6 +603,7 @@ export interface BacktestSummary {
   maxDrawdownPercent: number;
   profitFactor?: number;
   equityCurve: Array<{ capturedAt: string; cumulativePnlPercent: number }>;
+  openPositions: BacktestOpenPosition[];
 }
 
 export interface PaperOrderDraft {

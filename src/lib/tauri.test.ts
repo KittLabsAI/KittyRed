@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cancelFinancialReportFetch,
+  getRecommendationGenerationProgress,
   getFinancialReportAnalysis,
   getFinancialReportFetchProgress,
   getFinancialReportOverview,
   getFinancialReportSnapshot,
   listArbitrageOpportunities,
+  startRecommendationGeneration,
   startFinancialReportAnalysis,
   startFinancialReportFetch,
 } from "./tauri";
@@ -142,6 +144,7 @@ describe("financial report tauri bridge", () => {
         sections: [],
         sourceRevision: "rev-1",
         refreshedAt: "2026-05-08T10:00:00+08:00",
+        metricSeries: [],
         analysis: null,
       })
       .mockResolvedValueOnce({
@@ -180,5 +183,55 @@ describe("financial report tauri bridge", () => {
     expect(mocks.invoke).toHaveBeenNthCalledWith(4, "get_financial_report_analysis", {
       stockCode: "SHSE.600000",
     });
+  });
+});
+
+describe("recommendation tauri bridge", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+  });
+
+  it("starts recommendation generation and maps progress payloads", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        status: "running",
+        completed_count: 1,
+        total_count: 3,
+        message: "正在生成 AI 建议",
+        items: [
+          {
+            stock_code: "SHSE.600000",
+            short_name: "浦发银行",
+            status: "running",
+            attempt: 1,
+            error_message: null,
+          },
+        ],
+      });
+
+    await startRecommendationGeneration();
+    await expect(getRecommendationGenerationProgress()).resolves.toEqual({
+      status: "running",
+      completedCount: 1,
+      totalCount: 3,
+      message: "正在生成 AI 建议",
+      items: [
+        {
+          stockCode: "SHSE.600000",
+          shortName: "浦发银行",
+          status: "running",
+          attempt: 1,
+          errorMessage: undefined,
+        },
+      ],
+    });
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "start_recommendation_generation");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "get_recommendation_generation_progress");
   });
 });

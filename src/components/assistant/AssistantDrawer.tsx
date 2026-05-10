@@ -54,6 +54,7 @@ const markdownComponents: Components = {
 };
 
 export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
+  const [drawerWidth, setDrawerWidth] = useState(560);
   const assistantDraft = useRecommendationStore((state) => state.assistantDraft);
   const [sessionId] = useState(getOrCreateSessionId);
   const [input, setInput] = useState("");
@@ -63,6 +64,9 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
   const [context, setContext] = useState<AssistantContextSnapshot>(emptyAssistantContext);
   const messageCounter = useRef(0);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const resizePointerIdRef = useRef<number | null>(null);
+  const resizeStartXRef = useRef(0);
+  const resizeStartWidthRef = useRef(560);
 
   useEffect(() => {
     if (open && !input && assistantDraft) {
@@ -147,6 +151,31 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
       unlisten?.();
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      if (resizePointerIdRef.current !== event.pointerId) {
+        return;
+      }
+      const delta = resizeStartXRef.current - event.clientX;
+      const nextWidth = Math.min(860, Math.max(400, resizeStartWidthRef.current + delta));
+      setDrawerWidth(nextWidth);
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      if (resizePointerIdRef.current === event.pointerId) {
+        resizePointerIdRef.current = null;
+      }
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, []);
 
   function nextMessageId(prefix: string) {
     messageCounter.current += 1;
@@ -384,6 +413,13 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
     context.maxTokens > 0
       ? Math.min(100, (context.usedTokens / context.maxTokens) * 100)
       : 0;
+  const effectiveWidth =
+    typeof window !== "undefined" && window.innerWidth <= 900
+      ? window.innerWidth
+      : drawerWidth;
+  const drawerStyle: CSSProperties = {
+    width: `${effectiveWidth}px`,
+  };
 
   if (!open) {
     return null;
@@ -395,7 +431,18 @@ export function AssistantDrawer({ open, onClose }: AssistantDrawerProps) {
       aria-label="AI 助手抽屉"
       className="assistant-drawer border-l border-border bg-[color:var(--panel-strong)] shadow-[-14px_0_42px_rgba(0,0,0,0.26)]"
       role="dialog"
+      style={drawerStyle}
     >
+      <div
+        aria-label="调整助手宽度"
+        className="assistant-drawer__resize-handle"
+        onPointerDown={(event) => {
+          resizePointerIdRef.current = event.pointerId;
+          resizeStartXRef.current = event.clientX;
+          resizeStartWidthRef.current = drawerWidth;
+        }}
+        role="separator"
+      />
       <header className="assistant-drawer__header border-b border-border">
         <div>
           <span className="assistant-drawer__eyebrow">AI 助手</span>

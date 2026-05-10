@@ -125,6 +125,8 @@ impl Database {
         self.run_market_cache_base_asset_migration()?;
         self.run_backtest_progress_migration()?;
         self.run_backtest_ai_data_migration()?;
+        self.run_financial_report_score_migration()?;
+        self.run_financial_report_subscore_migrations()?;
         Ok(())
     }
 
@@ -219,6 +221,50 @@ impl Database {
         ];
         for (column, statement) in columns {
             if !self.has_column("backtest_snapshots", column)? {
+                if let Err(error) = self.connection.execute_batch(statement) {
+                    if !error.to_string().contains("duplicate column name") {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_financial_report_score_migration(&self) -> anyhow::Result<()> {
+        if !self.has_column("financial_report_analysis_cache", "financial_score")? {
+            if let Err(error) = self.connection.execute_batch(
+                "ALTER TABLE financial_report_analysis_cache ADD COLUMN financial_score INTEGER NOT NULL DEFAULT 0",
+            ) {
+                if !error.to_string().contains("duplicate column name") {
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_financial_report_subscore_migrations(&self) -> anyhow::Result<()> {
+        let columns = [
+            ("revenue_quality_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN revenue_quality_score INTEGER NOT NULL DEFAULT 0"),
+            ("gross_margin_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN gross_margin_score INTEGER NOT NULL DEFAULT 0"),
+            ("net_profit_return_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN net_profit_return_score INTEGER NOT NULL DEFAULT 0"),
+            ("earnings_manipulation_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN earnings_manipulation_score INTEGER NOT NULL DEFAULT 0"),
+            ("solvency_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN solvency_score INTEGER NOT NULL DEFAULT 0"),
+            ("cash_flow_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN cash_flow_score INTEGER NOT NULL DEFAULT 0"),
+            ("growth_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN growth_score INTEGER NOT NULL DEFAULT 0"),
+            ("research_capital_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN research_capital_score INTEGER NOT NULL DEFAULT 0"),
+            ("operating_efficiency_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN operating_efficiency_score INTEGER NOT NULL DEFAULT 0"),
+            ("asset_quality_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN asset_quality_score INTEGER NOT NULL DEFAULT 0"),
+            ("profitability_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN profitability_score REAL NOT NULL DEFAULT 0"),
+            ("authenticity_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN authenticity_score REAL NOT NULL DEFAULT 0"),
+            ("cash_generation_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN cash_generation_score REAL NOT NULL DEFAULT 0"),
+            ("safety_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN safety_score REAL NOT NULL DEFAULT 0"),
+            ("growth_potential_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN growth_potential_score REAL NOT NULL DEFAULT 0"),
+            ("operating_radar_score", "ALTER TABLE financial_report_analysis_cache ADD COLUMN operating_radar_score REAL NOT NULL DEFAULT 0"),
+        ];
+        for (column, statement) in columns {
+            if !self.has_column("financial_report_analysis_cache", column)? {
                 if let Err(error) = self.connection.execute_batch(statement) {
                     if !error.to_string().contains("duplicate column name") {
                         return Err(error.into());

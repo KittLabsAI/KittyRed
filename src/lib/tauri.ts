@@ -9,6 +9,7 @@ import type {
   BacktestSummary,
   BacktestTrade,
   FinancialReportAnalysis,
+  FinancialReportAnalysisProgress,
   FinancialReportFetchProgress,
   FinancialReportOverview,
   FinancialReportSnapshot,
@@ -31,6 +32,8 @@ import type {
   PriceLevel,
   RecentTradeRow,
   RecommendationAudit,
+  RecommendationGenerationProgress,
+  RecommendationGenerationProgressItem,
   RecommendationHistoryRow,
   RiskDecision,
   RecommendationRun,
@@ -274,6 +277,7 @@ type RecommendationHistoryRowDto = {
   stop_loss: number | null;
   take_profit: string | null;
   leverage: number | null;
+  amount_cny: number | null;
   confidence_score: number;
   model_name: string;
   prompt_version: string;
@@ -304,6 +308,79 @@ type RecommendationAuditDto = {
   risk_result: string;
   market_snapshot: string;
   account_snapshot: string;
+};
+
+type RecommendationGenerationProgressItemDto = {
+  stock_code?: string;
+  stockCode?: string;
+  short_name?: string;
+  shortName?: string;
+  status: string;
+  attempt: number;
+  error_message?: string | null;
+  errorMessage?: string | null;
+};
+
+type RecommendationGenerationProgressDto = {
+  status: string;
+  completed_count?: number;
+  completedCount?: number;
+  total_count?: number;
+  totalCount?: number;
+  message: string;
+  items: RecommendationGenerationProgressItemDto[];
+};
+
+type FinancialReportMetricPointDto = {
+  report_date: string;
+  value: number;
+  yoy?: number | null;
+  qoq?: number | null;
+};
+
+type FinancialReportMetricSeriesDto = {
+  metric_key: string;
+  metric_label: string;
+  unit: string;
+  points: FinancialReportMetricPointDto[];
+};
+
+type FinancialReportCategoryScoresDto = {
+  revenueQuality: number;
+  grossMargin: number;
+  netProfitReturn: number;
+  earningsManipulation: number;
+  solvency: number;
+  cashFlow: number;
+  growth: number;
+  researchCapital: number;
+  operatingEfficiency: number;
+  assetQuality: number;
+};
+
+type FinancialReportRadarScoresDto = {
+  profitability: number;
+  authenticity: number;
+  cashGeneration: number;
+  safety: number;
+  growthPotential: number;
+  operatingEfficiency: number;
+};
+
+type FinancialReportAnalysisProgressItemDto = {
+  stockCode: string;
+  shortName: string;
+  status: "pending" | "running" | "retrying" | "succeeded" | "failed";
+  attempt: number;
+  errorMessage?: string | null;
+};
+
+type FinancialReportAnalysisProgressDto = {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: FinancialReportAnalysisProgressItemDto[];
 };
 
 type BacktestDatasetDto = {
@@ -484,6 +561,28 @@ type BacktestTradeDto = {
   pnlPercent?: number;
 };
 
+type BacktestOpenPositionDto = {
+  signal_id?: string;
+  signalId?: string;
+  symbol: string;
+  stock_name?: string | null;
+  stockName?: string | null;
+  entry_price?: number;
+  entryPrice?: number;
+  entry_at?: string;
+  entryAt?: string;
+  mark_price?: number;
+  markPrice?: number;
+  amount_cny?: number;
+  amountCny?: number;
+  holding_periods?: number;
+  holdingPeriods?: number;
+  unrealized_pnl_cny?: number;
+  unrealizedPnlCny?: number;
+  unrealized_pnl_percent?: number;
+  unrealizedPnlPercent?: number;
+};
+
 type BacktestSummaryDto = {
   backtest_id?: string;
   backtestId?: string;
@@ -503,6 +602,8 @@ type BacktestSummaryDto = {
   profitFactor?: number | null;
   equity_curve?: Array<{ captured_at?: string; capturedAt?: string; cumulative_pnl_percent?: number; cumulativePnlPercent?: number }>;
   equityCurve?: Array<{ captured_at?: string; capturedAt?: string; cumulative_pnl_percent?: number; cumulativePnlPercent?: number }>;
+  open_positions?: BacktestOpenPositionDto[];
+  openPositions?: BacktestOpenPositionDto[];
 };
 
 type PaperOrderDraftDto = {
@@ -888,6 +989,7 @@ function mapRecommendationHistoryRow(dto: RecommendationHistoryRowDto): Recommen
     stopLoss: dto.stop_loss ?? undefined,
     takeProfit: dto.take_profit ?? undefined,
     leverage: dto.leverage ?? undefined,
+    amountCny: dto.amount_cny ?? undefined,
     confidence: dto.confidence_score,
     modelName: dto.model_name,
     promptVersion: dto.prompt_version,
@@ -920,6 +1022,30 @@ function mapRecommendationAudit(dto: RecommendationAuditDto): RecommendationAudi
     riskResult: dto.risk_result,
     marketSnapshot: dto.market_snapshot,
     accountSnapshot: dto.account_snapshot,
+  };
+}
+
+function mapRecommendationGenerationProgressItem(
+  dto: RecommendationGenerationProgressItemDto,
+): RecommendationGenerationProgressItem {
+  return {
+    stockCode: dto.stock_code ?? dto.stockCode ?? "",
+    shortName: dto.short_name ?? dto.shortName ?? "",
+    status: dto.status,
+    attempt: dto.attempt,
+    errorMessage: dto.error_message ?? dto.errorMessage ?? undefined,
+  };
+}
+
+function mapRecommendationGenerationProgress(
+  dto: RecommendationGenerationProgressDto,
+): RecommendationGenerationProgress {
+  return {
+    status: dto.status,
+    completedCount: dto.completed_count ?? dto.completedCount ?? 0,
+    totalCount: dto.total_count ?? dto.totalCount ?? 0,
+    message: dto.message,
+    items: (dto.items ?? []).map(mapRecommendationGenerationProgressItem),
   };
 }
 
@@ -1042,8 +1168,25 @@ function mapBacktestTrade(dto: BacktestTradeDto): BacktestTrade {
   };
 }
 
+function mapBacktestOpenPosition(dto: BacktestOpenPositionDto) {
+  return {
+    signalId: dto.signal_id ?? dto.signalId ?? "",
+    symbol: dto.symbol,
+    stockName: dto.stock_name ?? dto.stockName ?? undefined,
+    entryPrice: dto.entry_price ?? dto.entryPrice ?? 0,
+    entryAt: dto.entry_at ?? dto.entryAt ?? "",
+    markPrice: dto.mark_price ?? dto.markPrice ?? 0,
+    amountCny: dto.amount_cny ?? dto.amountCny ?? 0,
+    holdingPeriods: dto.holding_periods ?? dto.holdingPeriods ?? 0,
+    unrealizedPnlCny: dto.unrealized_pnl_cny ?? dto.unrealizedPnlCny ?? 0,
+    unrealizedPnlPercent:
+      dto.unrealized_pnl_percent ?? dto.unrealizedPnlPercent ?? 0,
+  };
+}
+
 function mapBacktestSummary(dto: BacktestSummaryDto): BacktestSummary {
   const curve = dto.equity_curve ?? dto.equityCurve ?? [];
+  const openPositions = dto.open_positions ?? dto.openPositions ?? [];
   return {
     backtestId: dto.backtest_id ?? dto.backtestId ?? "",
     totalSignals: dto.total_signals ?? dto.totalSignals ?? 0,
@@ -1057,6 +1200,7 @@ function mapBacktestSummary(dto: BacktestSummaryDto): BacktestSummary {
       capturedAt: point.captured_at ?? point.capturedAt ?? "",
       cumulativePnlPercent: point.cumulative_pnl_percent ?? point.cumulativePnlPercent ?? 0,
     })),
+    openPositions: openPositions.map(mapBacktestOpenPosition),
   };
 }
 
@@ -1424,6 +1568,29 @@ export async function triggerRecommendation(symbol?: string): Promise<Recommenda
   return dto.map(mapRecommendation);
 }
 
+export async function startRecommendationGeneration(): Promise<void> {
+  if (!isTauriRuntime()) {
+    return;
+  }
+
+  await invoke("start_recommendation_generation");
+}
+
+export async function getRecommendationGenerationProgress(): Promise<RecommendationGenerationProgress> {
+  if (!isTauriRuntime()) {
+    return {
+      status: "idle",
+      completedCount: 0,
+      totalCount: 0,
+      message: "尚未开始 AI 建议生成",
+      items: [],
+    };
+  }
+
+  const dto = await invoke<RecommendationGenerationProgressDto>("get_recommendation_generation_progress");
+  return mapRecommendationGenerationProgress(dto);
+}
+
 export async function listRecommendationHistory(): Promise<RecommendationHistoryRow[]> {
   if (!isTauriRuntime()) {
     return useRecommendationStore.getState().history;
@@ -1717,6 +1884,7 @@ export async function getBacktestSummary(backtestId: string): Promise<BacktestSu
         { capturedAt: "2026-04-01T10:00:00+08:00", cumulativePnlPercent: 0 },
         { capturedAt: "2026-04-02T10:00:00+08:00", cumulativePnlPercent: 2.67 },
       ],
+      openPositions: [],
     });
   }
 
@@ -2068,7 +2236,73 @@ export async function getFinancialReportOverview(): Promise<FinancialReportOverv
       analyses: [],
     };
   }
-  return invoke<FinancialReportOverview>("get_financial_report_overview");
+  const dto = await invoke<{
+    stockCount: number;
+    rowCount: number;
+    refreshedAt?: string | null;
+    sections: Array<{ section: string; label: string; source: string; rowCount: number }>;
+    analyses: Array<{
+      stockCode: string;
+      stockName?: string | null;
+      financialScore: number;
+      categoryScores: FinancialReportCategoryScoresDto;
+      radarScores: FinancialReportRadarScoresDto;
+      sourceRevision: string;
+      keySummary: string;
+      positiveFactors: string;
+      negativeFactors: string;
+      fraudRiskPoints: string;
+      modelProvider?: string | null;
+      modelName?: string | null;
+      generatedAt: string;
+      stale: boolean;
+    }>;
+  }>("get_financial_report_overview");
+  return {
+    stockCount: dto.stockCount,
+    rowCount: dto.rowCount,
+    refreshedAt: dto.refreshedAt ?? null,
+    sections: dto.sections.map((item) => ({
+      section: item.section,
+      label: item.label,
+      source: item.source,
+      rowCount: item.rowCount,
+    })),
+    analyses: dto.analyses.map((item) => ({
+      stockCode: item.stockCode,
+      stockName: item.stockName ?? null,
+      financialScore: item.financialScore,
+      categoryScores: {
+        revenueQuality: item.categoryScores.revenueQuality,
+        grossMargin: item.categoryScores.grossMargin,
+        netProfitReturn: item.categoryScores.netProfitReturn,
+        earningsManipulation: item.categoryScores.earningsManipulation,
+        solvency: item.categoryScores.solvency,
+        cashFlow: item.categoryScores.cashFlow,
+        growth: item.categoryScores.growth,
+        researchCapital: item.categoryScores.researchCapital,
+        operatingEfficiency: item.categoryScores.operatingEfficiency,
+        assetQuality: item.categoryScores.assetQuality,
+      },
+      radarScores: {
+        profitability: item.radarScores.profitability,
+        authenticity: item.radarScores.authenticity,
+        cashGeneration: item.radarScores.cashGeneration,
+        safety: item.radarScores.safety,
+        growthPotential: item.radarScores.growthPotential,
+        operatingEfficiency: item.radarScores.operatingEfficiency,
+      },
+      sourceRevision: item.sourceRevision,
+      keySummary: item.keySummary,
+      positiveFactors: item.positiveFactors,
+      negativeFactors: item.negativeFactors,
+      fraudRiskPoints: item.fraudRiskPoints,
+      modelProvider: item.modelProvider ?? null,
+      modelName: item.modelName ?? null,
+      generatedAt: item.generatedAt,
+      stale: item.stale,
+    })),
+  };
 }
 
 export async function getFinancialReportSnapshot(
@@ -2077,13 +2311,114 @@ export async function getFinancialReportSnapshot(
   if (!isTauriRuntime()) {
     return {
       stockCode,
+      stockName: null,
       sections: [],
       sourceRevision: "",
       refreshedAt: null,
+      metricSeries: [],
       analysis: null,
     };
   }
-  return invoke<FinancialReportSnapshot>("get_financial_report_snapshot", { stockCode });
+  const dto = await invoke<{
+    stockCode: string;
+    stockName?: string | null;
+    sections: Array<{
+      section: string;
+      label: string;
+      source: string;
+      rows: Array<{
+        stockCode: string;
+        reportDate?: string | null;
+        stockName?: string | null;
+        raw: Record<string, unknown>;
+      }>;
+      error?: string | null;
+    }>;
+    sourceRevision: string;
+    refreshedAt?: string | null;
+    metricSeries: FinancialReportMetricSeriesDto[];
+    analysis?: {
+      stockCode: string;
+      stockName?: string | null;
+      financialScore: number;
+      categoryScores: FinancialReportCategoryScoresDto;
+      radarScores: FinancialReportRadarScoresDto;
+      sourceRevision: string;
+      keySummary: string;
+      positiveFactors: string;
+      negativeFactors: string;
+      fraudRiskPoints: string;
+      modelProvider?: string | null;
+      modelName?: string | null;
+      generatedAt: string;
+      stale: boolean;
+    } | null;
+  }>("get_financial_report_snapshot", { stockCode });
+  return {
+    stockCode: dto.stockCode,
+    stockName: dto.stockName ?? null,
+    sections: dto.sections.map((section) => ({
+      section: section.section,
+      label: section.label,
+      source: section.source,
+      rows: section.rows.map((row) => ({
+        stockCode: row.stockCode,
+        reportDate: row.reportDate ?? null,
+        stockName: row.stockName ?? null,
+        raw: row.raw,
+      })),
+      error: section.error ?? null,
+    })),
+    sourceRevision: dto.sourceRevision,
+    refreshedAt: dto.refreshedAt ?? null,
+    metricSeries: dto.metricSeries.map((series) => ({
+      metricKey: series.metric_key,
+      metricLabel: series.metric_label,
+      unit: series.unit,
+      points: series.points.map((point) => ({
+        reportDate: point.report_date,
+        value: point.value,
+        yoy: point.yoy ?? null,
+        qoq: point.qoq ?? null,
+      })),
+    })),
+    analysis: dto.analysis
+      ? {
+          stockCode: dto.analysis.stockCode,
+          stockName: dto.analysis.stockName ?? null,
+          financialScore: dto.analysis.financialScore,
+          categoryScores: {
+            revenueQuality: dto.analysis.categoryScores.revenueQuality,
+            grossMargin: dto.analysis.categoryScores.grossMargin,
+            netProfitReturn: dto.analysis.categoryScores.netProfitReturn,
+            earningsManipulation: dto.analysis.categoryScores.earningsManipulation,
+            solvency: dto.analysis.categoryScores.solvency,
+            cashFlow: dto.analysis.categoryScores.cashFlow,
+            growth: dto.analysis.categoryScores.growth,
+            researchCapital: dto.analysis.categoryScores.researchCapital,
+            operatingEfficiency: dto.analysis.categoryScores.operatingEfficiency,
+            assetQuality: dto.analysis.categoryScores.assetQuality,
+          },
+          radarScores: {
+            profitability: dto.analysis.radarScores.profitability,
+            authenticity: dto.analysis.radarScores.authenticity,
+            cashGeneration: dto.analysis.radarScores.cashGeneration,
+            safety: dto.analysis.radarScores.safety,
+            growthPotential: dto.analysis.radarScores.growthPotential,
+            operatingEfficiency: dto.analysis.radarScores.operatingEfficiency,
+          },
+          sourceRevision: dto.analysis.sourceRevision,
+          keySummary: dto.analysis.keySummary,
+          positiveFactors: dto.analysis.positiveFactors,
+          negativeFactors: dto.analysis.negativeFactors,
+          fraudRiskPoints: dto.analysis.fraudRiskPoints,
+          modelProvider: dto.analysis.modelProvider ?? null,
+          modelName: dto.analysis.modelName ?? null,
+          generatedAt: dto.analysis.generatedAt,
+          stale: dto.analysis.stale,
+        }
+      : null,
+  };
 }
 
 export async function getFinancialReportAnalysis(
@@ -2091,6 +2426,32 @@ export async function getFinancialReportAnalysis(
 ): Promise<FinancialReportAnalysis | null> {
   if (!isTauriRuntime()) return null;
   return invoke<FinancialReportAnalysis | null>("get_financial_report_analysis", { stockCode });
+}
+
+export async function getFinancialReportAnalysisProgress(): Promise<FinancialReportAnalysisProgress> {
+  if (!isTauriRuntime()) {
+    return {
+      status: "idle",
+      completedCount: 0,
+      totalCount: 0,
+      message: "尚未开始财报 AI 分析",
+      items: [],
+    };
+  }
+  const dto = await invoke<FinancialReportAnalysisProgressDto>("get_financial_report_analysis_progress");
+  return {
+    status: dto.status,
+    completedCount: dto.completedCount,
+    totalCount: dto.totalCount,
+    message: dto.message,
+    items: dto.items.map((item) => ({
+      stockCode: item.stockCode,
+      shortName: item.shortName,
+      status: item.status,
+      attempt: item.attempt,
+      errorMessage: item.errorMessage ?? null,
+    })),
+  };
 }
 
 export async function startFinancialReportAnalysis(): Promise<void> {
