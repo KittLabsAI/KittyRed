@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../..
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Select } from "../../components/ui/select";
-import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
+import { formatCurrency, formatDateTime, formatPercent, formatStockPrice } from "../../lib/format";
 import {
   createManualPaperOrder,
   getLatestRecommendation,
@@ -14,6 +14,7 @@ import {
   getPairDetail,
   listMarkets,
   listPaperAccounts,
+  listenToMarketEvents,
   triggerRecommendation,
 } from "../../lib/tauri";
 import { useAppStore } from "../../store/appStore";
@@ -140,6 +141,36 @@ export function PairDetailPage() {
     }
   }, [querySymbol]);
 
+  useEffect(() => {
+    if (!symbol) {
+      return undefined;
+    }
+
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+
+    void listenToMarketEvents((event) => {
+      if (event.symbol !== symbol || event.interval !== candleInterval) {
+        return;
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["pair-candles", symbol, "ashare", candleInterval],
+        refetchType: "active",
+      });
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      cleanup = unlisten;
+    });
+
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }, [candleInterval, queryClient, symbol]);
+
   function handleAskAssistant() {
     const refreshedAt = quoteUpdatedAt ?? candles?.updatedAt ?? "最新行情";
     setAssistantDraft(`请用中文解释 ${symbol} 的行情变化、交易计划和主要风险。参考数据时间：${refreshedAt}。`);
@@ -170,7 +201,7 @@ export function PairDetailPage() {
         <div className="pair-detail-quote-strip rounded-xl border border-white/8 bg-white/[0.025]">
           <div>
             <span>最新价</span>
-            <strong>{referencePrice > 0 ? formatCurrency(referencePrice) : "--"}</strong>
+            <strong>{referencePrice > 0 ? formatStockPrice(referencePrice) : "--"}</strong>
           </div>
           <div>
             <span>涨跌幅</span>
@@ -236,7 +267,7 @@ export function PairDetailPage() {
               </div>
               <div>
                 <span>参考价</span>
-                <strong>{referencePrice > 0 ? formatCurrency(referencePrice) : "--"}</strong>
+                <strong>{referencePrice > 0 ? formatStockPrice(referencePrice) : "--"}</strong>
               </div>
             </div>
             <div className="paper-trade-grid">

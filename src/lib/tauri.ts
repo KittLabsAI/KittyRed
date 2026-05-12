@@ -627,6 +627,11 @@ type NotificationEventDto = {
   created_at: string;
 };
 
+type CandleCacheUpdatedEvent = {
+  symbol: string;
+  interval: string;
+};
+
 type PaperAccountDto = {
   account_id: string;
   exchange: string;
@@ -2004,6 +2009,21 @@ export async function listenToAssistantEvents(
 
   const { listen } = await import("@tauri-apps/api/event");
   return listen<AssistantEvent>("assistant://event", (event) => listener(event.payload));
+}
+
+export async function listenToMarketEvents(
+  listener: (event: CandleCacheUpdatedEvent) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) {
+    const browserHandler = (event: Event) => {
+      listener((event as CustomEvent<CandleCacheUpdatedEvent>).detail);
+    };
+    window.addEventListener("kittyred-market-event", browserHandler);
+    return () => window.removeEventListener("kittyred-market-event", browserHandler);
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<CandleCacheUpdatedEvent>("market://candle-cache-updated", (event) => listener(event.payload));
 }
 
 export async function startAssistantRun(sessionId: string, message: string): Promise<void> {

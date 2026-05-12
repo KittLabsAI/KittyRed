@@ -29,7 +29,7 @@ use crate::settings::SettingsService;
 
 const TOTAL_SECTIONS: u32 = 6;
 const ALL_STOCKS_KEY: &str = "ALL";
-const ANALYSIS_TIMEOUT_SECS: u64 = 60;
+const ANALYSIS_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Clone)]
 pub struct FinancialReportService {
@@ -126,7 +126,13 @@ impl FinancialReportService {
     pub fn fetch_reports(&self) -> anyhow::Result<()> {
         let cancel = self.cancel_flag(ALL_STOCKS_KEY);
         cancel.store(false, Ordering::SeqCst);
-        self.set_progress(ALL_STOCKS_KEY, "running", 0, "正在请求 AKShare 全量财报数据", None);
+        self.set_progress(
+            ALL_STOCKS_KEY,
+            "running",
+            0,
+            "正在请求 AKShare 全量财报数据",
+            None,
+        );
         if cancel.load(Ordering::SeqCst) {
             self.set_progress(ALL_STOCKS_KEY, "cancelled", 0, "财报拉取已取消", None);
             return Ok(());
@@ -183,12 +189,19 @@ impl FinancialReportService {
                 section.error.clone(),
             );
         }
-        self.set_progress(ALL_STOCKS_KEY, "completed", TOTAL_SECTIONS, "财报拉取完成", None);
+        self.set_progress(
+            ALL_STOCKS_KEY,
+            "completed",
+            TOTAL_SECTIONS,
+            "财报拉取完成",
+            None,
+        );
         Ok(())
     }
 
     pub fn cancel(&self) {
-        self.cancel_flag(ALL_STOCKS_KEY).store(true, Ordering::SeqCst);
+        self.cancel_flag(ALL_STOCKS_KEY)
+            .store(true, Ordering::SeqCst);
         self.set_progress(ALL_STOCKS_KEY, "cancelled", 0, "财报拉取已取消", None);
     }
 
@@ -215,7 +228,10 @@ impl FinancialReportService {
             .clone())
     }
 
-    pub fn overview(&self, watchlist_symbols: &[String]) -> anyhow::Result<FinancialReportOverviewDto> {
+    pub fn overview(
+        &self,
+        watchlist_symbols: &[String],
+    ) -> anyhow::Result<FinancialReportOverviewDto> {
         let db = self.db.lock().expect("financial report db lock poisoned");
         let stock_count = db.connection().query_row(
             "SELECT COUNT(DISTINCT stock_code) FROM financial_report_cache",
@@ -229,7 +245,11 @@ impl FinancialReportService {
         )?;
         let refreshed_at = db
             .connection()
-            .query_row("SELECT MAX(refreshed_at) FROM financial_report_cache", [], |row| row.get(0))
+            .query_row(
+                "SELECT MAX(refreshed_at) FROM financial_report_cache",
+                [],
+                |row| row.get(0),
+            )
             .optional()?
             .flatten();
         let mut stmt = db.connection().prepare(
@@ -299,13 +319,15 @@ impl FinancialReportService {
         &self,
         stock_code: &str,
     ) -> anyhow::Result<Option<AiFinancialReportContextDto>> {
-        Ok(self.cached_analysis(stock_code)?.map(|analysis| AiFinancialReportContextDto {
-            key_summary: analysis.key_summary,
-            positive_factors: analysis.positive_factors,
-            negative_factors: analysis.negative_factors,
-            fraud_risk_points: analysis.fraud_risk_points,
-            radar_scores: analysis.radar_scores,
-        }))
+        Ok(self
+            .cached_analysis(stock_code)?
+            .map(|analysis| AiFinancialReportContextDto {
+                key_summary: analysis.key_summary,
+                positive_factors: analysis.positive_factors,
+                negative_factors: analysis.negative_factors,
+                fraud_risk_points: analysis.fraud_risk_points,
+                radar_scores: analysis.radar_scores,
+            }))
     }
 
     pub fn save_analysis(
@@ -409,13 +431,22 @@ impl FinancialReportService {
         let system_prompt = financial_analysis_system_prompt();
         let user_prompt = {
             let snapshot = self.snapshot(stock_code)?;
-            if snapshot.sections.iter().all(|section| section.rows.is_empty()) {
+            if snapshot
+                .sections
+                .iter()
+                .all(|section| section.rows.is_empty())
+            {
                 bail!("请先拉取该股票近两年财报，再进行 AI 分析");
             }
             financial_analysis_user_prompt(&snapshot)?
         };
-        self.complete_analysis_with_retry(stock_code, settings_service, &system_prompt, &user_prompt)
-            .await
+        self.complete_analysis_with_retry(
+            stock_code,
+            settings_service,
+            &system_prompt,
+            &user_prompt,
+        )
+        .await
     }
 
     async fn complete_analysis_with_retry(
@@ -426,12 +457,14 @@ impl FinancialReportService {
         user_prompt: &str,
     ) -> anyhow::Result<FinancialReportAnalysisDto> {
         let snapshot = self.snapshot(stock_code)?;
+        let runtime = settings_service.get_runtime_settings();
+        let model_settings = runtime.financial_report_model.clone();
         let mut last_error = String::new();
         for attempt in 1..=3u8 {
             self.update_analysis_item(&snapshot.stock_code, "running", attempt as u32, None);
             let content = match tokio::time::timeout(
                 Duration::from_secs(ANALYSIS_TIMEOUT_SECS),
-                llm::complete_text(settings_service, system_prompt, user_prompt),
+                llm::complete_text(settings_service, &model_settings, system_prompt, user_prompt),
             )
             .await
             {
@@ -440,7 +473,9 @@ impl FinancialReportService {
                     None => bail!("模型 API Key 未配置，无法进行财报 AI 分析"),
                 },
                 Err(_) => {
-                    last_error = format!("第 {attempt} 次尝试失败：调用模型超时（>{ANALYSIS_TIMEOUT_SECS}秒）");
+                    last_error = format!(
+                        "第 {attempt} 次尝试失败：调用模型超时（>{ANALYSIS_TIMEOUT_SECS}秒）"
+                    );
                     if attempt < 3 {
                         self.update_analysis_item(
                             &snapshot.stock_code,
@@ -472,7 +507,12 @@ impl FinancialReportService {
                         &parsed.fraud_risk_points,
                         &runtime,
                     )?;
-                    self.update_analysis_item(&snapshot.stock_code, "succeeded", attempt as u32, None);
+                    self.update_analysis_item(
+                        &snapshot.stock_code,
+                        "succeeded",
+                        attempt as u32,
+                        None,
+                    );
                     return Ok(saved);
                 }
                 Err(error) => {
@@ -507,10 +547,13 @@ impl FinancialReportService {
             bail!("自选股票池为空，无法进行财报 AI 分析");
         }
         self.initialize_analysis_progress(&watchlist);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(5));
         let tasks = watchlist.into_iter().map(|stock_code| {
             let service = self.clone();
             let settings = settings_service.clone();
+            let permit = semaphore.clone();
             async move {
+                let _guard = permit.acquire().await;
                 let code = stock_code.clone();
                 match service.analyze_reports(&stock_code, &settings).await {
                     Ok(_) => Ok(()),
@@ -520,15 +563,16 @@ impl FinancialReportService {
         });
         let results = futures::future::join_all(tasks).await;
         let success_count = results.iter().filter(|result| result.is_ok()).count();
-        let failures: Vec<(String, String)> = results
-            .into_iter()
-            .filter_map(Result::err)
-            .collect();
+        let failures: Vec<(String, String)> = results.into_iter().filter_map(Result::err).collect();
         self.finalize_analysis_progress();
         if success_count == 0 && !failures.is_empty() {
             let message = format!(
                 "财报 AI 分析全部失败：{}",
-                failures.iter().map(|(code, err)| format!("{code}: {err}")).collect::<Vec<_>>().join("；")
+                failures
+                    .iter()
+                    .map(|(code, err)| format!("{code}: {err}"))
+                    .collect::<Vec<_>>()
+                    .join("；")
             );
             bail!(message);
         }
@@ -588,7 +632,11 @@ impl FinancialReportService {
             .analysis_progress
             .lock()
             .expect("financial report analysis progress lock poisoned");
-        if let Some(item) = progress.items.iter_mut().find(|item| item.stock_code == stock_code) {
+        if let Some(item) = progress
+            .items
+            .iter_mut()
+            .find(|item| item.stock_code == stock_code)
+        {
             item.status = status.into();
             item.attempt = attempt;
             item.error_message = error_message;
@@ -607,7 +655,10 @@ impl FinancialReportService {
             "running".into()
         };
         progress.message = if status == "retrying" {
-            format!("正在重试 {} 的财报 AI 分析", self.short_name_for_stock(stock_code))
+            format!(
+                "正在重试 {} 的财报 AI 分析",
+                self.short_name_for_stock(stock_code)
+            )
         } else if progress.completed_count == progress.total_count {
             "财报 AI 分析完成".into()
         } else {
@@ -622,23 +673,20 @@ impl FinancialReportService {
     }
 
     fn latest_stock_name(&self, stock_code: &str) -> Option<String> {
-        self.db
-            .lock()
-            .ok()
-            .and_then(|db| {
-                db.connection()
-                    .query_row(
-                        "SELECT stock_name FROM financial_report_cache
+        self.db.lock().ok().and_then(|db| {
+            db.connection()
+                .query_row(
+                    "SELECT stock_name FROM financial_report_cache
                          WHERE stock_code = ?1 AND stock_name IS NOT NULL AND stock_name != ''
                          ORDER BY report_date DESC
                          LIMIT 1",
-                        params![stock_code],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-            })
+                    params![stock_code],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+        })
     }
 
     #[cfg(test)]
@@ -654,7 +702,11 @@ impl FinancialReportService {
         Fut: std::future::Future<Output = anyhow::Result<Option<String>>>,
     {
         let snapshot = self.snapshot(stock_code)?;
-        if snapshot.sections.iter().all(|section| section.rows.is_empty()) {
+        if snapshot
+            .sections
+            .iter()
+            .all(|section| section.rows.is_empty())
+        {
             bail!("请先拉取该股票近两年财报，再进行 AI 分析");
         }
 
@@ -667,7 +719,9 @@ impl FinancialReportService {
                     None => bail!("模型 API Key 未配置，无法进行财报 AI 分析"),
                 },
                 Err(_) => {
-                    last_error = format!("第 {attempt} 次尝试失败：调用模型超时（>{ANALYSIS_TIMEOUT_SECS}秒）");
+                    last_error = format!(
+                        "第 {attempt} 次尝试失败：调用模型超时（>{ANALYSIS_TIMEOUT_SECS}秒）"
+                    );
                     if attempt < 3 {
                         self.update_analysis_item(
                             &snapshot.stock_code,
@@ -699,7 +753,12 @@ impl FinancialReportService {
                         &parsed.fraud_risk_points,
                         &runtime,
                     )?;
-                    self.update_analysis_item(&snapshot.stock_code, "succeeded", attempt as u32, None);
+                    self.update_analysis_item(
+                        &snapshot.stock_code,
+                        "succeeded",
+                        attempt as u32,
+                        None,
+                    );
                     return Ok(saved);
                 }
                 Err(error) => {
@@ -725,10 +784,7 @@ impl FinancialReportService {
         bail!("财报 AI 分析失败（已重试 3 次）：{last_error}")
     }
 
-    fn save_section(
-        &self,
-        section: &AkshareFinancialSection,
-    ) -> anyhow::Result<()> {
+    fn save_section(&self, section: &AkshareFinancialSection) -> anyhow::Result<()> {
         let refreshed_at = now_rfc3339();
         let source_revision = section_revision(&section.rows);
         let db = self.db.lock().expect("financial report db lock poisoned");
@@ -949,7 +1005,9 @@ fn section_revision(rows: &[FinancialReportRowDto]) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn metric_series_for_sections(sections: &[FinancialReportSectionDto]) -> Vec<FinancialReportMetricSeriesDto> {
+fn metric_series_for_sections(
+    sections: &[FinancialReportSectionDto],
+) -> Vec<FinancialReportMetricSeriesDto> {
     let candidates = [
         ("营业收入", "营收", "亿元"),
         ("净利润", "净利润", "亿元"),
@@ -1043,20 +1101,29 @@ struct ParsedFinancialAnalysis {
 }
 
 fn financial_analysis_system_prompt() -> String {
-    "你是 KittyRed 的沪深 A 股财报分析助手。只输出 JSON，不要输出 Markdown、代码块或任何前后缀。\
-必须且只能包含以下十四个字段，字段名必须完全一致，值不能为空：\
-收入质量、毛利水平、净利与回报、盈利调节、偿债能力、现金流状况、业绩增速、研发及资本投入、营运效率、资产质量、关键信息总结、财报正向因素、财报负向因素、财报造假嫌疑点。\
-分数字段必须是整数，且上限依次为 8、10、12、5、15、15、12、8、10、5。\
+    "你是 KittyRed 的沪深 A 股财报分析助手。只输出一个 JSON 对象，不要 Markdown、代码块或任何前后缀。\n\
+\n\
+前十个字段是整数评分，后四个字段是文本分析。字段名必须完全一致：\n\
+收入质量、毛利水平、净利与回报、盈利调节、偿债能力、现金流状况、业绩增速、研发及资本投入、营运效率、资产质量、关键信息总结、财报正向因素、财报负向因素、财报造假嫌疑点。\n\
+\n\
+分数字段上限依次为 8、10、12、5、15、15、12、8、10、5。分数越高越好，请根据财报数据客观打分。\n\
+\n\
+输出示例（注意前十个字段的值必须是数字，不是文本）：\n\
+{\"收入质量\":7,\"毛利水平\":8,\"净利与回报\":10,\"盈利调节\":4,\"偿债能力\":12,\"现金流状况\":13,\"业绩增速\":9,\"研发及资本投入\":7,\"营运效率\":8,\"资产质量\":4,\"关键信息总结\":\"收入和利润保持增长，现金流充裕。\",\"财报正向因素\":\"经营现金流强劲，ROE 保持高位，毛利率稳定。\",\"财报负向因素\":\"资产负债率偏高，营收增速放缓，财务费用侵蚀利润。\",\"财报造假嫌疑点\":\"暂无明显异常，财务数据一致性较好。\"}\n\
+\n\
 不要输出财报综合评分，综合分由系统计算。不要给实盘交易指令，不要提及其他市场。".into()
 }
 
 fn financial_analysis_user_prompt(snapshot: &FinancialReportSnapshotDto) -> anyhow::Result<String> {
     Ok(format!(
-        "请基于以下 AKShare 财报缓存分析股票 {}。\
-只输出一个 JSON 对象，必须包含这十四个字段且值不能为空：收入质量、毛利水平、净利与回报、盈利调节、偿债能力、现金流状况、业绩增速、研发及资本投入、营运效率、资产质量、关键信息总结、财报正向因素、财报负向因素、财报造假嫌疑点。\
-分数字段上限依次为 8、10、12、5、15、15、12、8、10、5。\
-不要输出 Markdown 代码块。\
-\n财报数据：{}",
+        "请基于以下 AKShare 财报缓存分析股票 {}。\n\
+\n\
+前十个字段收入质量、毛利水平、净利与回报、盈利调节、偿债能力、现金流状况、业绩增速、研发及资本投入、营运效率、资产质量必须是整数（上限依次 8/10/12/5/15/15/12/8/10/5），绝对不要写文本。\n\
+后四个字段关键信息总结、财报正向因素、财报负向因素、财报造假嫌疑点是文本摘要。\n\
+\n\
+只输出一个 JSON 对象，不要 Markdown 代码块。\n\
+\n\
+财报数据：{}",
         snapshot.stock_code,
         serde_json::to_string(&snapshot.sections)?
     ))
@@ -1075,7 +1142,11 @@ fn parse_financial_analysis_response(raw: &str) -> anyhow::Result<ParsedFinancia
     let score = |name: &str, max: u32| -> anyhow::Result<u32> {
         let parsed = value
             .get(name)
-            .and_then(|value| value.as_u64().or_else(|| value.as_i64().map(|v| v.max(0) as u64)))
+            .and_then(|value| {
+                value
+                    .as_u64()
+                    .or_else(|| value.as_i64().map(|v| v.max(0) as u64))
+            })
             .ok_or_else(|| anyhow!("财报 AI 输出缺少字段：{name}"))? as u32;
         if parsed > max {
             bail!("财报 AI 输出字段超出范围：{name}");
@@ -1127,14 +1198,24 @@ fn calculate_financial_score(scores: &FinancialReportCategoryScoresDto) -> u32 {
         + scores.asset_quality
 }
 
-fn calculate_radar_scores(scores: &FinancialReportCategoryScoresDto) -> FinancialReportRadarScoresDto {
+fn calculate_radar_scores(
+    scores: &FinancialReportCategoryScoresDto,
+) -> FinancialReportRadarScoresDto {
     FinancialReportRadarScoresDto {
-        profitability: round_one_decimal((scores.gross_margin + scores.net_profit_return) as f64 / 22.0 * 10.0),
-        authenticity: round_one_decimal((scores.revenue_quality + scores.earnings_manipulation) as f64 / 13.0 * 10.0),
+        profitability: round_one_decimal(
+            (scores.gross_margin + scores.net_profit_return) as f64 / 22.0 * 10.0,
+        ),
+        authenticity: round_one_decimal(
+            (scores.revenue_quality + scores.earnings_manipulation) as f64 / 13.0 * 10.0,
+        ),
         cash_generation: round_one_decimal(scores.cash_flow as f64 / 15.0 * 10.0),
         safety: round_one_decimal(scores.solvency as f64 / 15.0 * 10.0),
-        growth_potential: round_one_decimal((scores.growth + scores.research_capital) as f64 / 20.0 * 10.0),
-        operating_efficiency: round_one_decimal((scores.operating_efficiency + scores.asset_quality) as f64 / 15.0 * 10.0),
+        growth_potential: round_one_decimal(
+            (scores.growth + scores.research_capital) as f64 / 20.0 * 10.0,
+        ),
+        operating_efficiency: round_one_decimal(
+            (scores.operating_efficiency + scores.asset_quality) as f64 / 15.0 * 10.0,
+        ),
     }
 }
 
@@ -1222,16 +1303,21 @@ mod tests {
     fn saves_and_reads_cached_sections() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(
-                &sample_section("performance_report", "业绩报表", "2026-03-31"),
-            )
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
 
         let snapshot = service.snapshot("600000").unwrap();
 
         assert_eq!(snapshot.stock_code, "SHSE.600000");
         assert_eq!(snapshot.sections.len(), 1);
-        assert_eq!(snapshot.sections[0].rows[0].stock_name.as_deref(), Some("浦发银行"));
+        assert_eq!(
+            snapshot.sections[0].rows[0].stock_name.as_deref(),
+            Some("浦发银行")
+        );
         assert!(!snapshot.source_revision.is_empty());
     }
 
@@ -1239,19 +1325,21 @@ mod tests {
     fn replacing_one_section_keeps_other_sections() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(
-                &sample_section("performance_report", "业绩报表", "2026-03-31"),
-            )
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
         service
-            .save_section(
-                &sample_section("balance_sheet", "资产负债表", "2026-03-31"),
-            )
+            .save_section(&sample_section("balance_sheet", "资产负债表", "2026-03-31"))
             .unwrap();
         service
-            .save_section(
-                &sample_section("performance_report", "业绩报表", "2025-12-31"),
-            )
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2025-12-31",
+            ))
             .unwrap();
 
         let snapshot = service.snapshot("SHSE.600000").unwrap();
@@ -1263,7 +1351,10 @@ mod tests {
             .find(|section| section.section == "performance_report")
             .unwrap();
         assert_eq!(performance.rows.len(), 1);
-        assert_eq!(performance.rows[0].report_date.as_deref(), Some("2025-12-31"));
+        assert_eq!(
+            performance.rows[0].report_date.as_deref(),
+            Some("2025-12-31")
+        );
     }
 
     #[test]
@@ -1287,9 +1378,11 @@ mod tests {
     fn analysis_stale_flag_tracks_source_revision() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(
-                &sample_section("performance_report", "业绩报表", "2026-03-31"),
-            )
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
         let revision = service.snapshot("SHSE.600000").unwrap().source_revision;
         let runtime = SettingsService::default().get_runtime_settings();
@@ -1311,20 +1404,26 @@ mod tests {
         assert_eq!(analysis.financial_score, 82);
         assert_eq!(analysis.category_scores.gross_margin, 8);
         service
-            .save_section(
-                &sample_section("performance_report", "业绩报表", "2025-12-31"),
-            )
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2025-12-31",
+            ))
             .unwrap();
-        assert!(service.cached_analysis("SHSE.600000").unwrap().unwrap().stale);
+        assert!(
+            service
+                .cached_analysis("SHSE.600000")
+                .unwrap()
+                .unwrap()
+                .stale
+        );
     }
 
     #[test]
     fn section_failure_keeps_existing_cache_rows() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(
-                &sample_section("income_statement", "利润表", "2026-03-31"),
-            )
+            .save_section(&sample_section("income_statement", "利润表", "2026-03-31"))
             .unwrap();
         let cancel = AtomicBool::new(false);
 
@@ -1343,7 +1442,10 @@ mod tests {
 
         let snapshot = service.snapshot("SHSE.600000").unwrap();
         assert_eq!(snapshot.sections.len(), 1);
-        assert_eq!(snapshot.sections[0].rows[0].report_date.as_deref(), Some("2026-03-31"));
+        assert_eq!(
+            snapshot.sections[0].rows[0].report_date.as_deref(),
+            Some("2026-03-31")
+        );
     }
 
     #[test]
@@ -1398,7 +1500,11 @@ mod tests {
     fn shared_ai_financial_context_returns_text_and_radar_scores() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(&sample_section("performance_report", "业绩报表", "2026-03-31"))
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
         let runtime = SettingsService::default().get_runtime_settings();
         let revision = service.snapshot("SHSE.600000").unwrap().source_revision;
@@ -1430,7 +1536,11 @@ mod tests {
     fn shared_ai_financial_context_returns_none_without_cached_analysis() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(&sample_section("performance_report", "业绩报表", "2026-03-31"))
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
 
         assert!(service
@@ -1457,9 +1567,11 @@ mod tests {
     fn parse_failure_leaves_existing_analysis_cache_unchanged() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(
-                &sample_section("performance_report", "业绩报表", "2026-03-31"),
-            )
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
         let revision = service.snapshot("SHSE.600000").unwrap().source_revision;
         let runtime = SettingsService::default().get_runtime_settings();
@@ -1543,7 +1655,11 @@ mod tests {
     async fn analysis_timeout_updates_retry_and_failure_progress() {
         let service = FinancialReportService::in_memory().unwrap();
         service
-            .save_section(&sample_section("performance_report", "业绩报表", "2026-03-31"))
+            .save_section(&sample_section(
+                "performance_report",
+                "业绩报表",
+                "2026-03-31",
+            ))
             .unwrap();
         service.initialize_analysis_progress(&["SHSE.600000".into()]);
         let settings = SettingsService::default();
@@ -1581,7 +1697,14 @@ mod tests {
         let service = FinancialReportService::new(financial_report_path)
             .expect("financial report service should initialize");
 
-        let failed_stocks = ["SZSE.000858", "SHSE.600436", "SZSE.000568", "SHSE.600031", "SHSE.600111", "SHSE.688981"];
+        let failed_stocks = [
+            "SZSE.000858",
+            "SHSE.600436",
+            "SZSE.000568",
+            "SHSE.600031",
+            "SHSE.600111",
+            "SHSE.688981",
+        ];
 
         for stock in &failed_stocks {
             match service.snapshot(stock) {
@@ -1589,7 +1712,10 @@ mod tests {
                     println!("[{stock}] 财报缓存存在，开始 AI 分析...");
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     match rt.block_on(service.analyze_reports(stock, &settings_service)) {
-                        Ok(result) => println!("[{stock}] ✅ 分析成功: {}", &result.key_summary[..result.key_summary.len().min(60)]),
+                        Ok(result) => println!(
+                            "[{stock}] ✅ 分析成功: {}",
+                            &result.key_summary[..result.key_summary.len().min(60)]
+                        ),
                         Err(e) => println!("[{stock}] ❌ 分析失败: {e}"),
                     }
                 }

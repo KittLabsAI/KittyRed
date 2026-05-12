@@ -19,9 +19,10 @@ mod tests {
         runtime.daily_max_ai_calls = 12;
         runtime.use_financial_report_data = true;
         runtime.pause_after_consecutive_losses = 2;
-        runtime.model_temperature = 0.4;
-        runtime.model_max_tokens = 1200;
-        runtime.model_max_context = 24000;
+        runtime.recommendation_model.temperature = 0.4;
+        runtime.recommendation_model.max_tokens = 1200;
+        runtime.recommendation_model.max_context = 24000;
+        runtime.recommendation_model.effort_level = "high".into();
         runtime.account_mode = "dual".into();
         runtime.auto_paper_execution = true;
         runtime.allowed_markets = "ashare".into();
@@ -51,9 +52,10 @@ mod tests {
         assert_eq!(restored.daily_max_ai_calls, 12);
         assert!(restored.use_financial_report_data);
         assert_eq!(restored.pause_after_consecutive_losses, 2);
-        assert_eq!(restored.model_temperature, 0.4);
-        assert_eq!(restored.model_max_tokens, 1200);
-        assert_eq!(restored.model_max_context, 24_000);
+        assert_eq!(restored.recommendation_model.temperature, 0.4);
+        assert_eq!(restored.recommendation_model.max_tokens, 1200);
+        assert_eq!(restored.recommendation_model.max_context, 24_000);
+        assert_eq!(restored.recommendation_model.effort_level, "high");
         assert_eq!(restored.account_mode, "paper");
         assert!(restored.auto_paper_execution);
         assert_eq!(restored.allowed_markets, "ashare");
@@ -81,6 +83,7 @@ mod tests {
             .sync_runtime_secrets(RuntimeSecretsSyncDto {
                 persist: false,
                 model_api_key: Some("sk-session".into()),
+                xueqiu_token: None,
                 exchanges: Vec::new(),
             })
             .expect("session-only secrets should sync");
@@ -122,6 +125,7 @@ mod tests {
             .sync_runtime_secrets(RuntimeSecretsSyncDto {
                 persist: true,
                 model_api_key: Some("sk-persisted".into()),
+                xueqiu_token: None,
                 exchanges: Vec::new(),
             })
             .expect("persistent secrets should sync");
@@ -147,6 +151,7 @@ mod tests {
             .sync_runtime_secrets(RuntimeSecretsSyncDto {
                 persist: true,
                 model_api_key: Some("sk-keep".into()),
+                xueqiu_token: None,
                 exchanges: Vec::new(),
             })
             .expect("initial secret sync should succeed");
@@ -155,6 +160,7 @@ mod tests {
             .sync_runtime_secrets(RuntimeSecretsSyncDto {
                 persist: true,
                 model_api_key: None,
+                xueqiu_token: None,
                 exchanges: Vec::new(),
             })
             .expect("none payload should preserve existing secret");
@@ -186,8 +192,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::models::{
     default_assistant_system_prompt, default_recommendation_system_prompt,
-    ExchangeCredentialSummary, RuntimeExchangeSettingsDto, RuntimeNotificationSettingsDto,
-    RuntimeSecretsSyncDto, RuntimeSettingsDto, SettingsSnapshotDto,
+    ExchangeCredentialSummary, ModelUseCaseSettingsDto, RuntimeExchangeSettingsDto,
+    RuntimeNotificationSettingsDto, RuntimeSecretsSyncDto, RuntimeSettingsDto,
+    SettingsSnapshotDto,
 };
 use crate::notifications::NotificationPreferences;
 use secure_store::{FileSecretStore, InMemorySecretStore, SecretStore};
@@ -270,6 +277,11 @@ impl SettingsService {
             secrets.model_api_key.as_deref(),
             secrets.persist,
         )?;
+        self.update_secret(
+            "akshare.xueqiuToken",
+            secrets.xueqiu_token.as_deref(),
+            secrets.persist,
+        )?;
 
         for exchange in secrets.exchanges {
             self.update_secret(
@@ -344,6 +356,10 @@ impl SettingsService {
 
     pub fn model_api_key(&self) -> anyhow::Result<Option<String>> {
         self.load_secret("model.apiKey")
+    }
+
+    pub fn xueqiu_token(&self) -> anyhow::Result<Option<String>> {
+        self.load_secret("akshare.xueqiuToken")
     }
 
     pub fn prompt_extension(&self) -> String {
@@ -441,16 +457,33 @@ fn default_runtime_settings() -> RuntimeSettingsDto {
         model_provider: "OpenAI-compatible".into(),
         model_name: "gpt-5.5".into(),
         model_base_url: String::new(),
-        model_temperature: 0.2,
-        model_max_tokens: 900,
-        model_max_context: 16_000,
+        recommendation_model: ModelUseCaseSettingsDto {
+            temperature: 0.2,
+            max_tokens: 900,
+            max_context: 16_000,
+            effort_level: "off".into(),
+        },
+        assistant_model: ModelUseCaseSettingsDto {
+            temperature: 0.7,
+            max_tokens: 16_000,
+            max_context: 128_000,
+            effort_level: "off".into(),
+        },
+        financial_report_model: ModelUseCaseSettingsDto {
+            temperature: 0.2,
+            max_tokens: 4_096,
+            max_context: 64_000,
+            effort_level: "off".into(),
+        },
         has_stored_model_api_key: false,
+        has_stored_xueqiu_token: false,
+        intraday_data_source: crate::models::default_intraday_data_source(),
+        historical_data_source: crate::models::default_historical_data_source(),
         auto_analyze_enabled: true,
         auto_analyze_frequency: "10m".into(),
         scan_scope: "watchlist_only".into(),
         watchlist_symbols: Vec::new(),
         daily_max_ai_calls: 24,
-        use_bid_ask_data: true,
         use_financial_report_data: false,
         ai_kline_bar_count: 60,
         ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
@@ -528,10 +561,34 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
             runtime.model_name
         },
         model_base_url: runtime.model_base_url,
-        model_temperature: runtime.model_temperature.clamp(0.0, 2.0),
-        model_max_tokens: runtime.model_max_tokens.max(1),
-        model_max_context: runtime.model_max_context.max(1_024),
+        recommendation_model: ModelUseCaseSettingsDto {
+            temperature: runtime.recommendation_model.temperature.clamp(0.0, 2.0),
+            max_tokens: runtime.recommendation_model.max_tokens.max(1),
+            max_context: runtime.recommendation_model.max_context.max(1_024),
+            effort_level: normalize_effort_level(&runtime.recommendation_model.effort_level),
+        },
+        assistant_model: ModelUseCaseSettingsDto {
+            temperature: runtime.assistant_model.temperature.clamp(0.0, 2.0),
+            max_tokens: runtime.assistant_model.max_tokens.max(1),
+            max_context: runtime.assistant_model.max_context.max(1_024),
+            effort_level: normalize_effort_level(&runtime.assistant_model.effort_level),
+        },
+        financial_report_model: ModelUseCaseSettingsDto {
+            temperature: runtime.financial_report_model.temperature.clamp(0.0, 2.0),
+            max_tokens: runtime.financial_report_model.max_tokens.max(1),
+            max_context: runtime.financial_report_model.max_context.max(1_024),
+            effort_level: normalize_effort_level(&runtime.financial_report_model.effort_level),
+        },
         has_stored_model_api_key: runtime.has_stored_model_api_key,
+        has_stored_xueqiu_token: runtime.has_stored_xueqiu_token,
+        intraday_data_source: match runtime.intraday_data_source.as_str() {
+            "eastmoney" => runtime.intraday_data_source,
+            _ => crate::models::default_intraday_data_source(),
+        },
+        historical_data_source: match runtime.historical_data_source.as_str() {
+            "sina" | "eastmoney" | "tencent" => runtime.historical_data_source,
+            _ => crate::models::default_historical_data_source(),
+        },
         auto_analyze_enabled: runtime.auto_analyze_enabled,
         auto_analyze_frequency: match runtime.auto_analyze_frequency.as_str() {
             "5m" | "10m" | "30m" | "1h" => runtime.auto_analyze_frequency,
@@ -540,7 +597,6 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
         scan_scope: "watchlist_only".into(),
         watchlist_symbols: normalize_symbol_list(runtime.watchlist_symbols),
         daily_max_ai_calls: runtime.daily_max_ai_calls.max(1),
-        use_bid_ask_data: runtime.use_bid_ask_data,
         use_financial_report_data: runtime.use_financial_report_data,
         ai_kline_bar_count: runtime.ai_kline_bar_count.clamp(1, 500),
         ai_kline_frequencies: normalize_ai_kline_frequencies(runtime.ai_kline_frequencies),
@@ -591,6 +647,15 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
         signal_auto_execute: runtime.signal_auto_execute,
         signal_notifications: runtime.signal_notifications,
         signal_watchlist_symbols: normalize_symbol_list(runtime.signal_watchlist_symbols),
+    }
+}
+
+fn normalize_effort_level(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "low" => "low".into(),
+        "medium" => "medium".into(),
+        "high" => "high".into(),
+        _ => "off".into(),
     }
 }
 

@@ -63,6 +63,7 @@ pub async fn scan_signals(
         .scan_all(
             &enabled,
             &app.market_data_service,
+            &app.settings_service,
             &settings,
             account_equity,
         )

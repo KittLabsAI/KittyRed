@@ -334,11 +334,18 @@ impl SignalService {
         &self,
         _enabled_exchanges: &[String],
         market_data: &MarketDataService,
+        settings_service: &crate::settings::SettingsService,
         runtime: &RuntimeSettingsDto,
         account_equity_usdt: f64,
     ) -> anyhow::Result<Vec<UnifiedSignal>> {
         Ok(self
-            .scan_all_with_strategy_signals(&[], market_data, runtime, account_equity_usdt)
+            .scan_all_with_strategy_signals(
+                &[],
+                market_data,
+                settings_service,
+                runtime,
+                account_equity_usdt,
+            )
             .await?
             .signals)
     }
@@ -347,6 +354,7 @@ impl SignalService {
         &self,
         _enabled_exchanges: &[String],
         market_data: &MarketDataService,
+        settings_service: &crate::settings::SettingsService,
         runtime: &RuntimeSettingsDto,
         account_equity_usdt: f64,
     ) -> anyhow::Result<SignalScanOutcome> {
@@ -413,10 +421,16 @@ impl SignalService {
                     .cloned()
                     .unwrap_or_else(|| row.clone());
                 let symbol = row.symbol.clone();
+                let settings_service = settings_service.clone();
                 async move {
                     let candles =
                         tokio::time::timeout(std::time::Duration::from_secs(15), async move {
-                            crate::market::akshare::fetch_history_bars(&symbol, "1d", 120)
+                            crate::market::akshare::fetch_history_bars_with_settings(
+                                &settings_service,
+                                &symbol,
+                                "1d",
+                                120,
+                            )
                         })
                         .await;
                     (row, source_row, candles)
@@ -511,6 +525,7 @@ impl SignalService {
         _market_type: &str,
         _enabled_exchanges: &[String],
         market_data: &MarketDataService,
+        settings_service: &crate::settings::SettingsService,
         runtime: &RuntimeSettingsDto,
         account_equity_usdt: f64,
     ) -> anyhow::Result<(Vec<StrategySignal>, Option<UnifiedSignal>)> {
@@ -519,8 +534,13 @@ impl SignalService {
             .into_iter()
             .find(|row| row.symbol == symbol && row.market_type.eq_ignore_ascii_case("ashare"))
             .with_context(|| format!("No cached A-share market data for {symbol}"))?;
-        let candles = crate::market::akshare::fetch_history_bars(&row.symbol, "1d", 120)
-            .with_context(|| format!("Failed to fetch candles for {symbol}"))?;
+        let candles = crate::market::akshare::fetch_history_bars_with_settings(
+            settings_service,
+            &row.symbol,
+            "1d",
+            120,
+        )
+        .with_context(|| format!("Failed to fetch candles for {symbol}"))?;
 
         if candles.len() < 30 {
             return Ok((Vec::new(), None));
@@ -689,10 +709,17 @@ mod integration_tests {
             .filter(|e| e.enabled)
             .map(|e| e.exchange.clone())
             .collect();
+        let settings_service = crate::settings::SettingsService::default();
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            signal_service.scan_all(&enabled, &market_data, &runtime, 10_000.0),
+            signal_service.scan_all(
+                &enabled,
+                &market_data,
+                &settings_service,
+                &runtime,
+                10_000.0,
+            ),
         )
         .await;
 

@@ -4,6 +4,8 @@ use crate::models::{
     AShareSymbolSearchResultDto, ArbitrageOpportunityPageDto, CandleSeriesDto, CoinInfoDto,
     MarketListRow, PairDetailDto, PairVenueSnapshot, SpreadOpportunityDto,
 };
+use serde::Serialize;
+use tauri::Emitter;
 
 #[cfg(test)]
 mod tests {
@@ -127,7 +129,7 @@ pub async fn refresh_watchlist_tickers(
     let watchlist = normalize_watchlist(&settings.watchlist_symbols);
     state
         .market_data_service
-        .refresh_ticker_cache_from_akshare(&watchlist)
+        .refresh_ticker_cache_from_akshare(&state.settings_service, &watchlist)
         .await
         .map_err(|error| error.to_string())?;
     Ok(state
@@ -152,7 +154,7 @@ pub async fn get_pair_detail(
     let refresh_symbols = vec![normalized.clone()];
     let _ = state
         .market_data_service
-        .refresh_ticker_cache_from_akshare(&refresh_symbols)
+        .refresh_ticker_cache_from_akshare(&state.settings_service, &refresh_symbols)
         .await;
 
     let row = state
@@ -193,8 +195,11 @@ pub async fn get_pair_candles(
         .cached_candle_bars(&normalized, &frequency, count);
     if !cached.is_empty() {
         refresh_candle_cache_in_background(
+            state.app_handle.clone(),
+            state.settings_service.clone(),
             state.market_data_service.clone(),
             normalized.clone(),
+            interval.clone(),
             frequency,
             count,
         );
@@ -207,8 +212,13 @@ pub async fn get_pair_candles(
         ));
     }
 
-    let bars = crate::market::akshare::fetch_history_bars(&normalized, &frequency, count)
-        .map_err(|error| error.to_string())?;
+    let bars = crate::market::akshare::fetch_history_bars_with_settings(
+        &state.settings_service,
+        &normalized,
+        &frequency,
+        count,
+    )
+    .map_err(|error| error.to_string())?;
     state
         .market_data_service
         .cache_candle_bars(&normalized, &frequency, &bars)
@@ -246,22 +256,41 @@ fn candle_series_from_bars(
 }
 
 fn refresh_candle_cache_in_background(
+    app_handle: tauri::AppHandle,
+    settings_service: crate::settings::SettingsService,
     market_data_service: crate::market::MarketDataService,
     symbol: String,
+    interval: String,
     frequency: String,
     count: usize,
 ) {
     tauri::async_runtime::spawn(async move {
         let fetch_symbol = symbol.clone();
         let fetch_frequency = frequency.clone();
+        let settings_service = settings_service.clone();
         let fetched = tokio::task::spawn_blocking(move || {
-            crate::market::akshare::fetch_history_bars(&fetch_symbol, &fetch_frequency, count)
+            crate::market::akshare::fetch_history_bars_with_settings(
+                &settings_service,
+                &fetch_symbol,
+                &fetch_frequency,
+                count,
+            )
         })
         .await;
         if let Ok(Ok(bars)) = fetched {
             let _ = market_data_service.cache_candle_bars(&symbol, &frequency, &bars);
+            let _ = app_handle.emit(
+                "market://candle-cache-updated",
+                CandleCacheUpdatedEvent { symbol, interval },
+            );
         }
     });
+}
+
+#[derive(Clone, Serialize)]
+struct CandleCacheUpdatedEvent {
+    symbol: String,
+    interval: String,
 }
 
 #[tauri::command]

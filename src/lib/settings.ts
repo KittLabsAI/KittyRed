@@ -6,6 +6,8 @@ import { Stronghold } from "@tauri-apps/plugin-stronghold";
 export type AnalyzeFrequency = "5m" | "10m" | "30m" | "1h";
 export type SignalScanFrequency = "5m" | "10m" | "15m" | "30m" | "1h";
 export type AiKlineFrequency = "1m" | "5m" | "30m" | "1h" | "1d" | "1w" | "1M";
+export type IntradayDataSourceSetting = "sina" | "eastmoney";
+export type HistoricalDataSourceSetting = "sina" | "eastmoney" | "tencent";
 export type ScanScopeSetting = "all_markets" | "watchlist_only";
 export type AccountModeSetting = "paper" | "real_read_only" | "dual";
 export type AllowedMarketsSetting = "all" | "spot" | "perpetual";
@@ -16,6 +18,13 @@ export type AllowedDirectionSetting =
 export type ModelInterfaceSetting =
   | "OpenAI-compatible"
   | "Anthropic-compatible";
+export type EffortLevel = "off" | "low" | "medium" | "high";
+export type ModelUseCaseSettings = {
+  temperature: number;
+  maxTokens: number;
+  maxContext: number;
+  effortLevel: EffortLevel;
+};
 export type ExchangeConnectionStatus =
   | "disabled"
   | "market_data_only"
@@ -46,16 +55,19 @@ export type SettingsFormData = {
   modelName: string;
   modelBaseUrl: string;
   modelApiKey: string;
-  modelTemperature: number;
-  modelMaxTokens: number;
-  modelMaxContext: number;
+  xueqiuToken: string;
+  intradayDataSource: IntradayDataSourceSetting;
+  historicalDataSource: HistoricalDataSourceSetting;
+  recommendationModel: ModelUseCaseSettings;
+  assistantModel: ModelUseCaseSettings;
+  financialReportModel: ModelUseCaseSettings;
   hasStoredModelApiKey: boolean;
+  hasStoredXueqiuToken: boolean;
   autoAnalyzeEnabled: boolean;
   autoAnalyzeFrequency: AnalyzeFrequency;
   scanScope: ScanScopeSetting;
   watchlistSymbols: string[];
   dailyMaxAiCalls: number;
-  useBidAskData: boolean;
   useFinancialReportData: boolean;
   aiKlineBarCount: number;
   aiKlineFrequencies: AiKlineFrequency[];
@@ -98,18 +110,34 @@ export type ModelProviderPreset = {
   interface: ModelInterfaceSetting;
 };
 
-export type ModelConnectionDraft = Pick<
-  SettingsFormData,
-  | "modelProvider"
-  | "modelName"
-  | "modelBaseUrl"
-  | "modelApiKey"
-  | "modelTemperature"
-  | "modelMaxTokens"
-  | "modelMaxContext"
->;
+export type ModelConnectionDraft = {
+  modelProvider: string;
+  modelName: string;
+  modelBaseUrl: string;
+  modelApiKey: string;
+  recommendationModel: ModelUseCaseSettings;
+};
 
 export type ConnectionTestResult = {
+  ok: boolean;
+  message: string;
+};
+
+export type AkshareConnectionTestItemId =
+  | "quote"
+  | "intraday"
+  | "historical"
+  | "financial"
+  | "companyInfo"
+  | "tradeCalendar";
+
+export type AkshareConnectionTestDraft = Pick<
+  SettingsFormData,
+  "intradayDataSource" | "historicalDataSource" | "xueqiuToken"
+>;
+
+export type AkshareConnectionTestResult = {
+  itemId: AkshareConnectionTestItemId;
   ok: boolean;
   message: string;
 };
@@ -147,6 +175,7 @@ type RuntimeSettingsDto = Omit<
 type RuntimeSecretsSyncDto = {
   persist: boolean;
   modelApiKey: string | null;
+  xueqiuToken: string | null;
   exchanges: Array<{
     exchange: string;
     apiKey: string | null;
@@ -163,6 +192,11 @@ type SettingsSnapshotDto = {
     permission_trade: boolean;
     permission_withdraw: boolean;
   }>;
+};
+
+type SettingsSecretsDto = {
+  modelApiKey: string;
+  xueqiuToken: string;
 };
 
 const SETTINGS_STORAGE_PATH = "kittyalpha.settings.json";
@@ -291,16 +325,34 @@ function defaultSettings(): SettingsFormData {
     modelName: "gpt-5.5",
     modelBaseUrl: "",
     modelApiKey: "",
-    modelTemperature: 0,
-    modelMaxTokens: 4_096,
-    modelMaxContext: 128_000,
+    xueqiuToken: "",
+    intradayDataSource: "sina",
+    historicalDataSource: "eastmoney",
+    recommendationModel: {
+      temperature: 0.2,
+      maxTokens: 900,
+      maxContext: 16000,
+      effortLevel: "off" as EffortLevel,
+    },
+    assistantModel: {
+      temperature: 0.7,
+      maxTokens: 16000,
+      maxContext: 128000,
+      effortLevel: "off" as EffortLevel,
+    },
+    financialReportModel: {
+      temperature: 0.2,
+      maxTokens: 4096,
+      maxContext: 64000,
+      effortLevel: "off" as EffortLevel,
+    },
     hasStoredModelApiKey: false,
+    hasStoredXueqiuToken: false,
     autoAnalyzeEnabled: true,
     autoAnalyzeFrequency: "10m",
     scanScope: "all_markets",
     watchlistSymbols: [],
     dailyMaxAiCalls: 24,
-    useBidAskData: true,
     useFinancialReportData: false,
     aiKlineBarCount: 60,
     aiKlineFrequencies: ["5m", "1h", "1d", "1w"],
@@ -348,6 +400,23 @@ function normalizeModelInterface(value?: string | null): ModelInterfaceSetting {
     : "OpenAI-compatible";
 }
 
+function normalizeEffortLevel(value?: string | null): EffortLevel {
+  if (value === "low" || value === "medium" || value === "high") return value;
+  return "off";
+}
+
+function normalizeModelUseCaseSettings(
+  value: Partial<ModelUseCaseSettings> | null | undefined,
+  defaults: ModelUseCaseSettings,
+): ModelUseCaseSettings {
+  return {
+    temperature: Math.min(2, Math.max(0, Number.isFinite(value?.temperature as number) ? value!.temperature! : defaults.temperature)),
+    maxTokens: Math.max(1, value?.maxTokens ?? defaults.maxTokens),
+    maxContext: Math.max(1024, value?.maxContext ?? defaults.maxContext),
+    effortLevel: normalizeEffortLevel(value?.effortLevel),
+  };
+}
+
 function normalizeModelPreset(
   value?: string | null,
   baseUrl?: string | null,
@@ -387,6 +456,21 @@ function normalizeAiKlineFrequencies(
     allowed.includes(value as AiKlineFrequency),
   );
   return normalized.length > 0 ? Array.from(new Set(normalized)) : ["5m", "1h", "1d", "1w"];
+}
+
+function normalizeIntradayDataSource(
+  value: string | null | undefined,
+): IntradayDataSourceSetting {
+  return value === "eastmoney" ? "eastmoney" : "sina";
+}
+
+function normalizeHistoricalDataSource(
+  value: string | null | undefined,
+): HistoricalDataSourceSetting {
+  if (value === "sina" || value === "tencent") {
+    return value;
+  }
+  return "eastmoney";
 }
 
 function normalizePersistedSettings(
@@ -429,6 +513,21 @@ function normalizePersistedSettings(
     },
     modelPreset: normalizeModelPreset(value?.modelPreset, value?.modelBaseUrl),
     modelProvider: normalizeModelInterface(value?.modelProvider),
+    recommendationModel: normalizeModelUseCaseSettings(
+      value?.recommendationModel,
+      defaults.recommendationModel,
+    ),
+    assistantModel: normalizeModelUseCaseSettings(
+      value?.assistantModel,
+      defaults.assistantModel,
+    ),
+    financialReportModel: normalizeModelUseCaseSettings(
+      value?.financialReportModel,
+      defaults.financialReportModel,
+    ),
+    xueqiuToken: "",
+    intradayDataSource: normalizeIntradayDataSource(value?.intradayDataSource),
+    historicalDataSource: normalizeHistoricalDataSource(value?.historicalDataSource),
     scanScope:
       value?.scanScope === "watchlist_only" ||
       value?.scanScope === "all_markets"
@@ -438,7 +537,6 @@ function normalizePersistedSettings(
     watchlistSymbols,
     whitelistSymbols,
     blacklistSymbols,
-    useBidAskData: value?.useBidAskData ?? defaults.useBidAskData,
     useFinancialReportData:
       value?.useFinancialReportData ?? defaults.useFinancialReportData,
     aiKlineBarCount: Math.max(1, Number(value?.aiKlineBarCount ?? defaults.aiKlineBarCount)),
@@ -446,6 +544,8 @@ function normalizePersistedSettings(
     modelApiKey: "",
     hasStoredModelApiKey:
       value?.hasStoredModelApiKey ?? defaults.hasStoredModelApiKey,
+    hasStoredXueqiuToken:
+      value?.hasStoredXueqiuToken ?? defaults.hasStoredXueqiuToken,
     autoAnalyzeFrequency:
       (value?.autoAnalyzeFrequency as AnalyzeFrequency | undefined) ??
       defaults.autoAnalyzeFrequency,
@@ -464,9 +564,15 @@ function normalizePersistedSettings(
 }
 
 function toPersistedSettings(data: SettingsFormData): PersistedSettings {
-  const { modelApiKey: _modelApiKey, exchanges, ...rest } = data;
+  const {
+    modelApiKey: _modelApiKey,
+    xueqiuToken: _xueqiuToken,
+    exchanges,
+    ...rest
+  } = data;
   return {
     ...rest,
+    xueqiuToken: "",
     exchanges: exchanges.map((exchange) => ({
       exchange: exchange.exchange,
       enabled: exchange.enabled,
@@ -548,6 +654,14 @@ async function readRuntimeSnapshot(): Promise<SettingsSnapshotDto | null> {
   }
 
   return invoke<SettingsSnapshotDto>("get_settings_snapshot");
+}
+
+async function readRuntimeSecrets(): Promise<SettingsSecretsDto | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  return invoke<SettingsSecretsDto>("get_settings_secrets");
 }
 
 function mergeSnapshot(
@@ -633,10 +747,12 @@ export async function loadSettingsFormData(): Promise<SettingsFormData> {
   }
 
   const snapshot = await readRuntimeSnapshot().catch(() => null);
-  const normalized = mergeSnapshot(
-    normalizePersistedSettings(persisted),
-    snapshot,
-  );
+  const secrets = await readRuntimeSecrets().catch(() => null);
+  const normalized = {
+    ...mergeSnapshot(normalizePersistedSettings(persisted), snapshot),
+    modelApiKey: secrets?.modelApiKey ?? "",
+    xueqiuToken: secrets?.xueqiuToken ?? "",
+  };
 
   return normalized;
 }
@@ -673,6 +789,8 @@ export async function saveSettingsFormData(
     })),
     hasStoredModelApiKey:
       data.hasStoredModelApiKey || data.modelApiKey.trim().length > 0,
+    hasStoredXueqiuToken:
+      data.hasStoredXueqiuToken || data.xueqiuToken.trim().length > 0,
   };
   const persisted = toPersistedSettings(nextData);
 
@@ -681,6 +799,7 @@ export async function saveSettingsFormData(
   await syncRuntimeSecrets({
     persist: secretsPersisted,
     modelApiKey: nextSecretPayload(data.modelApiKey, data.hasStoredModelApiKey),
+    xueqiuToken: nextSecretPayload(data.xueqiuToken, data.hasStoredXueqiuToken),
     exchanges: data.exchanges.map((exchange) => ({
       exchange: exchange.exchange,
       apiKey: nextSecretPayload(exchange.apiKey, exchange.hasStoredApiKey),
@@ -715,6 +834,7 @@ export async function saveSettingsFormData(
     }
 
     await saveSecret("model.apiKey", data.modelApiKey, vaultPassword);
+    await saveSecret("akshare.xueqiuToken", data.xueqiuToken, vaultPassword);
   }
 
   return {
@@ -792,9 +912,34 @@ export async function testModelConnection(
       modelName: draft.modelName,
       modelBaseUrl: draft.modelBaseUrl,
       modelApiKey: draft.modelApiKey,
-      modelTemperature: draft.modelTemperature,
-      modelMaxTokens: draft.modelMaxTokens,
-      modelMaxContext: draft.modelMaxContext,
+      recommendationModel: {
+        temperature: draft.recommendationModel.temperature,
+        maxTokens: draft.recommendationModel.maxTokens,
+        maxContext: draft.recommendationModel.maxContext,
+        effortLevel: draft.recommendationModel.effortLevel,
+      },
+    },
+  });
+}
+
+export async function testAkshareConnectionItem(
+  itemId: AkshareConnectionTestItemId,
+  draft: AkshareConnectionTestDraft,
+): Promise<AkshareConnectionTestResult> {
+  if (!isTauriRuntime()) {
+    return {
+      itemId,
+      ok: true,
+      message: `${itemId} ok`,
+    };
+  }
+
+  return invoke<AkshareConnectionTestResult>("test_akshare_connection_item", {
+    payload: {
+      itemId,
+      intradayDataSource: draft.intradayDataSource,
+      historicalDataSource: draft.historicalDataSource,
+      xueqiuToken: draft.xueqiuToken.trim().length > 0 ? draft.xueqiuToken : null,
     },
   });
 }

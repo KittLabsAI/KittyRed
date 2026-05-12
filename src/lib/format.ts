@@ -6,6 +6,15 @@ export function formatCurrency(value: number) {
   }).format(value);
 }
 
+export function formatStockPrice(value: number) {
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 export function formatPercent(value: number) {
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(2)}%`;

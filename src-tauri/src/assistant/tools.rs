@@ -3,8 +3,7 @@ use serde_json::{json, Value};
 #[cfg(test)]
 mod tests {
     use super::{
-        allowed_tools, anthropic_tool_schemas, openai_tool_schemas,
-        openai_tool_schemas_for_runtime,
+        allowed_tools, anthropic_tool_schemas, openai_tool_schemas, openai_tool_schemas_for_runtime,
     };
     use crate::settings::SettingsService;
 
@@ -13,7 +12,6 @@ mod tests {
         let tools = allowed_tools();
         assert!(tools.contains(&"market_data".to_string()));
         assert!(tools.contains(&"stock_info".to_string()));
-        assert!(tools.contains(&"bid_ask".to_string()));
         assert!(tools.contains(&"kline_data".to_string()));
         assert!(tools.contains(&"financial_report_info".to_string()));
         assert!(!tools.contains(&"spread_analyzer".to_string()));
@@ -110,7 +108,9 @@ pub fn anthropic_tool_schemas() -> Vec<Value> {
         .collect()
 }
 
-pub fn anthropic_tool_schemas_for_runtime(runtime: &crate::models::RuntimeSettingsDto) -> Vec<Value> {
+pub fn anthropic_tool_schemas_for_runtime(
+    runtime: &crate::models::RuntimeSettingsDto,
+) -> Vec<Value> {
     tool_specs(runtime.use_financial_report_data)
         .iter()
         .map(|spec| {
@@ -219,18 +219,6 @@ fn tool_specs(include_financial_report: bool) -> Vec<ToolSpec> {
                 "properties": {
                     "stockCode": { "type": "string", "description": "A 股代码，例如 600000、SHSE.600000 或 SZSE.000001" }
                 },
-                "additionalProperties": false
-            }),
-        },
-        ToolSpec {
-            name: "bid_ask",
-            description: "通过 AKShare stock_bid_ask_em 读取 A 股实时五档买卖盘、最新价、涨跌幅、成交量和涨跌停价。",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "stockCode": { "type": "string", "description": "A 股代码，例如 600000、SHSE.600000 或 SZSE.000001" }
-                },
-                "required": ["stockCode"],
                 "additionalProperties": false
             }),
         },

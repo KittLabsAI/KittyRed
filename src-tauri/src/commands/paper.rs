@@ -127,6 +127,7 @@ pub async fn create_manual_paper_order(
         request,
         state.paper_service.clone(),
         state.job_service.clone(),
+        state.settings_service.clone(),
     );
 
     Ok(job)
@@ -135,6 +136,7 @@ pub async fn create_manual_paper_order(
 pub(crate) fn resume_pending_paper_order_jobs(
     job_service: crate::jobs::JobService,
     paper_service: crate::paper::PaperService,
+    settings_service: crate::settings::SettingsService,
 ) {
     for job in job_service
         .list_jobs()
@@ -164,7 +166,13 @@ pub(crate) fn resume_pending_paper_order_jobs(
                 continue;
             }
         };
-        spawn_paper_order_job(job.id, request, paper_service.clone(), job_service.clone());
+        spawn_paper_order_job(
+            job.id,
+            request,
+            paper_service.clone(),
+            job_service.clone(),
+            settings_service.clone(),
+        );
     }
 }
 
@@ -201,6 +209,7 @@ fn spawn_paper_order_job(
     request: ManualPaperOrderRequestDto,
     paper_service: crate::paper::PaperService,
     job_service: crate::jobs::JobService,
+    settings_service: crate::settings::SettingsService,
 ) {
     tauri::async_runtime::spawn(async move {
         while !a_share_market_is_open_now() {
@@ -214,12 +223,15 @@ fn spawn_paper_order_job(
             return;
         }
         let symbol = request.symbol.trim().to_ascii_uppercase();
-        let latest_price = crate::market::akshare::fetch_current_quotes(&[symbol.clone()])
-            .ok()
-            .and_then(|quotes| quotes.into_iter().next())
-            .filter(|quote| quote.last > 0.0)
-            .map(|quote| quote.last)
-            .or(request.entry_price);
+        let latest_price = crate::market::akshare::fetch_current_quotes_with_settings(
+            &settings_service,
+            &[symbol.clone()],
+        )
+        .ok()
+        .and_then(|quotes| quotes.into_iter().next())
+        .filter(|quote| quote.last > 0.0)
+        .map(|quote| quote.last)
+        .or(request.entry_price);
 
         let Some(entry_price) = latest_price else {
             job_service.finish_job(

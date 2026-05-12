@@ -2,8 +2,8 @@ use crate::app_state::AppState;
 use crate::errors::CommandResult;
 use crate::jobs::kinds;
 use crate::models::{
-    FinancialReportAnalysisDto, FinancialReportAnalysisProgressDto, FinancialReportFetchProgressDto,
-    FinancialReportOverviewDto, FinancialReportSnapshotDto,
+    FinancialReportAnalysisDto, FinancialReportAnalysisProgressDto,
+    FinancialReportFetchProgressDto, FinancialReportOverviewDto, FinancialReportSnapshotDto,
 };
 
 #[tauri::command]
@@ -21,7 +21,10 @@ pub async fn start_financial_report_fetch(state: tauri::State<'_, AppState>) -> 
         match result {
             Ok(()) => {
                 let progress = service.fetch_progress().ok();
-                if progress.as_ref().is_some_and(|item| item.status == "cancelled") {
+                if progress
+                    .as_ref()
+                    .is_some_and(|item| item.status == "cancelled")
+                {
                     jobs.finish_job(
                         job_id,
                         "cancelled",
@@ -54,9 +57,7 @@ pub async fn start_financial_report_fetch(state: tauri::State<'_, AppState>) -> 
 }
 
 #[tauri::command]
-pub async fn cancel_financial_report_fetch(
-    state: tauri::State<'_, AppState>,
-) -> CommandResult<()> {
+pub async fn cancel_financial_report_fetch(state: tauri::State<'_, AppState>) -> CommandResult<()> {
     state.financial_report_service.cancel();
     Ok(())
 }
@@ -115,7 +116,9 @@ pub async fn get_financial_report_analysis_progress(
 }
 
 #[tauri::command]
-pub async fn start_financial_report_analysis(state: tauri::State<'_, AppState>) -> CommandResult<()> {
+pub async fn start_financial_report_analysis(
+    state: tauri::State<'_, AppState>,
+) -> CommandResult<()> {
     let service = state.financial_report_service.clone();
     let settings = state.settings_service.clone();
     let jobs = state.job_service.clone();
@@ -130,8 +133,13 @@ pub async fn start_financial_report_analysis(state: tauri::State<'_, AppState>) 
             Ok((success_count, failures)) => {
                 let mut message = format!("已完成 {success_count} 只自选股财报 AI 分析");
                 if !failures.is_empty() {
-                    let failed_codes: Vec<&str> = failures.iter().map(|(code, _)| code.as_str()).collect();
-                    message.push_str(&format!("，{} 只失败：{}", failures.len(), failed_codes.join("、")));
+                    let failed_codes: Vec<&str> =
+                        failures.iter().map(|(code, _)| code.as_str()).collect();
+                    message.push_str(&format!(
+                        "，{} 只失败：{}",
+                        failures.len(),
+                        failed_codes.join("、")
+                    ));
                 }
                 jobs.finish_job(
                     job_id,

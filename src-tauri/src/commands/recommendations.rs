@@ -38,7 +38,7 @@ pub async fn trigger_recommendation(
         "manual",
     )
     .await
-        .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -93,9 +93,10 @@ pub async fn list_recommendation_history(
 
     let recommendation_service = state.recommendation_service.clone();
     let market_data_service = state.market_data_service.clone();
+    let settings_service = state.settings_service.clone();
     tokio::spawn(async move {
         let _ = recommendation_service
-            .list_history(&market_data_service, &enabled_exchanges)
+            .list_history(&settings_service, &market_data_service, &enabled_exchanges)
             .await;
     });
 

@@ -9,8 +9,8 @@
   --border: rgba(237, 243, 255, 0.09);
   --text: #edf3ff;
   --text-muted: rgba(237, 243, 255, 0.72);
-  --positive: #7ef7c4;
-  --negative: #ff8a80;
+  --positive: #ff6b6b;
+  --negative: #38d39f;
   --accent: #8fdcff;
   --accent-strong: #6cf4cb;
   --accent-fill: oklch(0.82 0.08 207);

@@ -14,7 +14,8 @@ mod tests {
     use crate::market::MarketDataService;
     use crate::models::{
         default_assistant_system_prompt, default_recommendation_system_prompt, MarketListRow,
-        OhlcvBar, RecommendationRunDto, RuntimeNotificationSettingsDto, RuntimeSettingsDto,
+        ModelUseCaseSettingsDto, OhlcvBar, RecommendationRunDto,
+        RuntimeNotificationSettingsDto, RuntimeSettingsDto,
     };
     use crate::recommendations::ledger::RecommendationEvaluation;
     use crate::recommendations::risk_engine;
@@ -178,16 +179,33 @@ mod tests {
             model_provider: "OpenAI-compatible".into(),
             model_name: "gpt-5.5".into(),
             model_base_url: String::new(),
-            model_temperature: 0.2,
-            model_max_tokens: 900,
-            model_max_context: 16_000,
+            recommendation_model: ModelUseCaseSettingsDto {
+                temperature: 0.2,
+                max_tokens: 900,
+                max_context: 16_000,
+                effort_level: "off".into(),
+            },
+            assistant_model: ModelUseCaseSettingsDto {
+                temperature: 0.7,
+                max_tokens: 16_000,
+                max_context: 128_000,
+                effort_level: "off".into(),
+            },
+            financial_report_model: ModelUseCaseSettingsDto {
+                temperature: 0.2,
+                max_tokens: 4_096,
+                max_context: 64_000,
+                effort_level: "off".into(),
+            },
             has_stored_model_api_key: false,
+            has_stored_xueqiu_token: false,
+            intraday_data_source: crate::models::default_intraday_data_source(),
+            historical_data_source: crate::models::default_historical_data_source(),
             auto_analyze_enabled: false,
             auto_analyze_frequency: "10m".into(),
             scan_scope: "all_markets".into(),
             watchlist_symbols: Vec::new(),
             daily_max_ai_calls: 24,
-            use_bid_ask_data: true,
             use_financial_report_data: false,
             ai_kline_bar_count: 60,
             ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
@@ -545,8 +563,13 @@ mod tests {
         assert_eq!(latest.model_name, "gpt-5.5");
         assert_eq!(latest.prompt_version, "recommendation-system-v2");
 
+        let settings = crate::settings::SettingsService::default();
         let history = restored
-            .list_history(&MarketDataService::with_static_rows(Vec::new()), &[])
+            .list_history(
+                &settings,
+                &MarketDataService::with_static_rows(Vec::new()),
+                &[],
+            )
             .await
             .expect("history lookup should succeed");
         assert_eq!(history.len(), 1);
@@ -595,8 +618,13 @@ mod tests {
             .await
             .expect("execution audit event should append");
 
+        let settings = crate::settings::SettingsService::default();
         let history = service
-            .list_history(&MarketDataService::with_static_rows(Vec::new()), &[])
+            .list_history(
+                &settings,
+                &MarketDataService::with_static_rows(Vec::new()),
+                &[],
+            )
             .await
             .expect("history lookup should succeed");
         assert_eq!(history.len(), 1);
@@ -693,7 +721,11 @@ mod tests {
             .expect("audit lookup should succeed")
             .is_none());
         assert!(service
-            .list_history(&MarketDataService::with_static_rows(Vec::new()), &[])
+            .list_history(
+                &crate::settings::SettingsService::default(),
+                &MarketDataService::with_static_rows(Vec::new()),
+                &[],
+            )
             .await
             .expect("history lookup should succeed")
             .is_empty());
@@ -771,9 +803,9 @@ use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::market::{coin_info, MarketDataService};
 use crate::models::{
-    MarketListRow, OhlcvBar, RecommendationAuditDto, RecommendationGenerationProgressDto,
-    RecommendationGenerationProgressItemDto, RecommendationHistoryRowDto, RecommendationRunDto,
-    RiskDecisionDto, RuntimeSettingsDto,
+    MarketListRow, OhlcvBar, RecommendationAuditDto,
+    RecommendationGenerationProgressDto, RecommendationGenerationProgressItemDto,
+    RecommendationHistoryRowDto, RecommendationRunDto, RiskDecisionDto, RuntimeSettingsDto,
 };
 use evaluator::estimate_pnl_percent;
 use risk_engine::{evaluate_plan, risk_settings_from_runtime, CandidatePlan, RiskSettings};
@@ -910,7 +942,11 @@ impl RecommendationService {
             .generation_progress
             .lock()
             .expect("recommendation generation progress lock poisoned");
-        if let Some(item) = progress.items.iter_mut().find(|item| item.stock_code == stock_code) {
+        if let Some(item) = progress
+            .items
+            .iter_mut()
+            .find(|item| item.stock_code == stock_code)
+        {
             item.status = status.into();
             item.attempt = attempt;
             item.error_message = error_message;
@@ -923,7 +959,11 @@ impl RecommendationService {
             .filter(|item| matches!(item.status.as_str(), "succeeded" | "failed"))
             .count() as u32;
         progress.total_count = progress.items.len() as u32;
-        progress.message = if let Some(item) = progress.items.iter().find(|item| item.stock_code == stock_code) {
+        progress.message = if let Some(item) = progress
+            .items
+            .iter()
+            .find(|item| item.stock_code == stock_code)
+        {
             if status == "failed" {
                 format!("{} 建议生成失败", item.short_name)
             } else if status == "succeeded" {
@@ -1089,6 +1129,7 @@ impl RecommendationService {
 
     pub async fn list_history(
         &self,
+        settings_service: &crate::settings::SettingsService,
         market_data_service: &MarketDataService,
         enabled_exchanges: &[String],
     ) -> anyhow::Result<Vec<RecommendationHistoryRowDto>> {
@@ -1114,6 +1155,7 @@ impl RecommendationService {
                     let refreshed = refresh_missing_evaluations(
                         &record.run,
                         &existing,
+                        settings_service,
                         market_data_service,
                         enabled_exchanges,
                     )
@@ -1369,6 +1411,7 @@ fn history_row_from_persisted(
 async fn refresh_missing_evaluations(
     run: &RecommendationRunDto,
     existing: &[RecommendationEvaluation],
+    settings_service: &crate::settings::SettingsService,
     market_data_service: &MarketDataService,
     _enabled_exchanges: &[String],
 ) -> anyhow::Result<Vec<RecommendationEvaluation>> {
@@ -1385,10 +1428,16 @@ async fn refresh_missing_evaluations(
         .ok_or_else(|| anyhow!("recommendation symbol is missing for evaluation"))?;
     let fetches = ["5m", "1h", "1d"].into_iter().map(|interval| {
         let symbol = symbol.to_string();
+        let settings_service = settings_service.clone();
         async move {
             let interval_for_fetch = interval.to_string();
             let result = tokio::task::spawn_blocking(move || {
-                crate::market::akshare::fetch_history_bars(&symbol, &interval_for_fetch, 240)
+                crate::market::akshare::fetch_history_bars_with_settings(
+                    &settings_service,
+                    &symbol,
+                    &interval_for_fetch,
+                    240,
+                )
             })
             .await
             .ok()

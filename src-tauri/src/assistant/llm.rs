@@ -97,17 +97,21 @@ where
         "https://api.openai.com/v1",
         "chat/completions",
     );
+    let mut body = json!({
+        "model": runtime.model_name,
+        "temperature": runtime.assistant_model.temperature,
+        "max_tokens": runtime.assistant_model.max_tokens,
+        "stream": true,
+        "messages": messages,
+        "tools": tools,
+    });
+    if runtime.assistant_model.effort_level != "off" {
+        body["reasoning_effort"] = json!(runtime.assistant_model.effort_level);
+    }
     let response = Client::new()
         .post(&endpoint)
         .bearer_auth(api_key)
-        .json(&json!({
-            "model": runtime.model_name,
-            "temperature": runtime.model_temperature,
-            "max_tokens": runtime.model_max_tokens,
-            "stream": true,
-            "messages": messages,
-            "tools": tools,
-        }))
+        .json(&body)
         .send()
         .await?;
     let status = response.status();
@@ -197,19 +201,34 @@ where
         "https://api.anthropic.com/v1",
         "messages",
     );
+    let mut body = json!({
+        "model": runtime.model_name,
+        "max_tokens": runtime.assistant_model.max_tokens,
+        "temperature": runtime.assistant_model.temperature,
+        "stream": true,
+        "system": system_prompt,
+        "messages": messages,
+        "tools": tools,
+    });
+    if runtime.assistant_model.effort_level != "off" {
+        let budget_tokens = match runtime.assistant_model.effort_level.as_str() {
+            "low" => 1024,
+            "medium" => 4096,
+            "high" => 16384,
+            _ => 0,
+        };
+        if budget_tokens > 0 {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget_tokens
+            });
+        }
+    }
     let response = Client::new()
         .post(&endpoint)
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
-        .json(&json!({
-            "model": runtime.model_name,
-            "max_tokens": runtime.model_max_tokens,
-            "temperature": runtime.model_temperature,
-            "stream": true,
-            "system": system_prompt,
-            "messages": messages,
-            "tools": tools,
-        }))
+        .json(&body)
         .send()
         .await?;
     let status = response.status();

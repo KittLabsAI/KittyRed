@@ -214,10 +214,6 @@ impl Database {
                 "kline_data_json",
                 "ALTER TABLE backtest_snapshots ADD COLUMN kline_data_json TEXT NOT NULL DEFAULT '{}'",
             ),
-            (
-                "bid_ask_json",
-                "ALTER TABLE backtest_snapshots ADD COLUMN bid_ask_json TEXT",
-            ),
         ];
         for (column, statement) in columns {
             if !self.has_column("backtest_snapshots", column)? {

@@ -49,12 +49,12 @@ export function CandlestickChart({ bars }: CandlestickChartProps) {
       },
     });
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
-      downColor: "#f97316",
-      borderDownColor: "#f97316",
-      wickDownColor: "#f97316",
-      upColor: "#10b981",
-      borderUpColor: "#10b981",
-      wickUpColor: "#10b981",
+      downColor: "#38d39f",
+      borderDownColor: "#38d39f",
+      wickDownColor: "#38d39f",
+      upColor: "#ff6b6b",
+      borderUpColor: "#ff6b6b",
+      wickUpColor: "#ff6b6b",
     });
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: {
@@ -81,7 +81,7 @@ export function CandlestickChart({ bars }: CandlestickChartProps) {
     );
     volumeSeries.setData(
       bars.map((bar) => ({
-        color: bar.close >= bar.open ? "rgba(16, 185, 129, 0.28)" : "rgba(249, 115, 22, 0.28)",
+        color: bar.close >= bar.open ? "rgba(255, 107, 107, 0.28)" : "rgba(56, 211, 159, 0.28)",
         time: toChartTimestamp(bar.openTime),
         value: bar.volume,
       })),

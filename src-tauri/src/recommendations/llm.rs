@@ -3,14 +3,14 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        build_market_prompt, build_system_prompt, endpoint_url, extract_anthropic_content,
-        extract_openai_content, new_recommendation_id, normalize_model_recommendation,
-        parse_model_recommendation, stock_agent_fetch_plan_labels, PositionContext,
-        PromptKlineContext, StockAgentData, build_stock_agent_market_prompt,
+        build_market_prompt, build_stock_agent_market_prompt, build_system_prompt, endpoint_url,
+        extract_anthropic_content, extract_openai_content, new_recommendation_id,
+        normalize_model_recommendation, parse_model_recommendation, stock_agent_fetch_plan_labels,
+        PositionContext, PromptKlineContext, StockAgentData,
     };
     use crate::models::{
         default_assistant_system_prompt, AiFinancialReportContextDto, MarketListRow,
-        RuntimeNotificationSettingsDto, RuntimeSettingsDto,
+        ModelUseCaseSettingsDto, RuntimeNotificationSettingsDto, RuntimeSettingsDto,
     };
 
     #[test]
@@ -221,14 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn stock_agent_fetch_plan_requests_profile_bid_ask_and_each_kline_period() {
+    fn stock_agent_fetch_plan_requests_profile_and_each_kline_period() {
         let labels = stock_agent_fetch_plan_labels();
 
         assert_eq!(
             labels,
             vec![
                 "stock_info",
-                "bid_ask",
                 "kline_5m",
                 "kline_1h",
                 "kline_1d",
@@ -266,7 +265,9 @@ mod tests {
             .expect("financial context should be included");
 
         assert_eq!(
-            financial.get("key_summary").and_then(serde_json::Value::as_str),
+            financial
+                .get("key_summary")
+                .and_then(serde_json::Value::as_str),
             Some("收入稳定增长")
         );
         assert_eq!(
@@ -568,16 +569,33 @@ mod tests {
             model_provider: "OpenAI-compatible".into(),
             model_name: "gpt-5.5".into(),
             model_base_url: String::new(),
-            model_temperature: 0.2,
-            model_max_tokens: 900,
-            model_max_context: 16_000,
+            recommendation_model: ModelUseCaseSettingsDto {
+                temperature: 0.2,
+                max_tokens: 900,
+                max_context: 16_000,
+                effort_level: "off".into(),
+            },
+            assistant_model: ModelUseCaseSettingsDto {
+                temperature: 0.7,
+                max_tokens: 16_000,
+                max_context: 128_000,
+                effort_level: "off".into(),
+            },
+            financial_report_model: ModelUseCaseSettingsDto {
+                temperature: 0.2,
+                max_tokens: 4_096,
+                max_context: 64_000,
+                effort_level: "off".into(),
+            },
             has_stored_model_api_key: true,
+            has_stored_xueqiu_token: false,
+            intraday_data_source: crate::models::default_intraday_data_source(),
+            historical_data_source: crate::models::default_historical_data_source(),
             auto_analyze_enabled: true,
             auto_analyze_frequency: "10m".into(),
             scan_scope: "all_markets".into(),
             watchlist_symbols: Vec::new(),
             daily_max_ai_calls: 24,
-            use_bid_ask_data: true,
             use_financial_report_data: false,
             ai_kline_bar_count: 60,
             ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),
@@ -712,8 +730,9 @@ use crate::market::MarketDataService;
 use crate::models::{
     default_assistant_system_prompt, default_recommendation_system_prompt,
     AiFinancialReportContextDto, ConnectionTestResultDto, MarketListRow,
-    ModelConnectionTestPayloadDto, RecommendationRunDto, RiskDecisionDto,
-    RuntimeNotificationSettingsDto, RuntimeSettingsDto, SymbolRecommendationDto,
+    ModelConnectionTestPayloadDto, ModelUseCaseSettingsDto, RecommendationRunDto,
+    RiskDecisionDto, RuntimeNotificationSettingsDto, RuntimeSettingsDto,
+    SymbolRecommendationDto,
 };
 use crate::recommendations::risk_engine::{
     evaluate_plan, risk_settings_from_runtime, CandidatePlan,
@@ -732,7 +751,6 @@ pub(crate) struct PromptKlineContext {
 #[derive(Debug, Clone, Default, Serialize)]
 struct StockAgentData {
     stock_info: Value,
-    bid_ask: Value,
     kline_data: PromptKlineContext,
     financial_report_analysis: Option<AiFinancialReportContextDto>,
     messages: HashMap<String, String>,
@@ -890,7 +908,8 @@ pub async fn generate_trade_plan(
             .cloned();
         async move {
             recommendation_service.update_generation_item(&row.symbol, "running", 1, None);
-            let mut agent_data = fetch_stock_agent_data(&row.symbol, &runtime).await;
+            let mut agent_data =
+                fetch_stock_agent_data(settings_service, &row.symbol, &runtime).await;
             agent_data.financial_report_analysis = financial_analysis;
             let user_prompt = build_stock_agent_market_prompt(
                 &row,
@@ -898,7 +917,7 @@ pub async fn generate_trade_plan(
                 &agent_data,
                 position_context.as_ref(),
             );
-            let content = call_text_model(&runtime, &api_key, &system_prompt, &user_prompt)
+            let content = call_text_model(&runtime, &runtime.recommendation_model, &api_key, &system_prompt, &user_prompt)
                 .await
                 .map(|value| strip_think_blocks(&value));
             let content = match content {
@@ -953,7 +972,12 @@ pub async fn generate_trade_plan(
             );
             match run {
                 Ok(run) => {
-                    recommendation_service.update_generation_item(&row.symbol, "succeeded", 1, None);
+                    recommendation_service.update_generation_item(
+                        &row.symbol,
+                        "succeeded",
+                        1,
+                        None,
+                    );
                     StockAgentAudit {
                         stock_code: row.symbol,
                         stock_name: row.base_asset,
@@ -1042,7 +1066,6 @@ pub async fn generate_trade_plan_with_historical_context(
     position_context: Option<&PositionContext>,
     financial_report_analysis: Option<AiFinancialReportContextDto>,
     stock_info: Value,
-    bid_ask: Option<Value>,
     kline_bars: HashMap<String, Vec<[f64; 4]>>,
 ) -> anyhow::Result<GeneratedTradePlan> {
     let api_key = match settings_service.model_api_key()? {
@@ -1053,7 +1076,6 @@ pub async fn generate_trade_plan_with_historical_context(
     let system_prompt = build_system_prompt(&runtime);
     let mut agent_data = StockAgentData::default();
     agent_data.stock_info = stock_info;
-    agent_data.bid_ask = bid_ask.unwrap_or_else(|| json!({}));
     agent_data.financial_report_analysis = financial_report_analysis;
     for (interval, bars) in kline_bars {
         agent_data.kline_data.bars.insert(
@@ -1075,7 +1097,7 @@ pub async fn generate_trade_plan_with_historical_context(
         .insert("source".into(), "历史回测快照，不读取当前行情。".into());
 
     let user_prompt = build_stock_agent_market_prompt(row, &runtime, &agent_data, position_context);
-    let content = call_text_model(&runtime, &api_key, &system_prompt, &user_prompt)
+    let content = call_text_model(&runtime, &runtime.recommendation_model, &api_key, &system_prompt, &user_prompt)
         .await
         .map(|value| strip_think_blocks(&value))?;
     let parsed = parse_model_recommendation(&content)?;
@@ -1116,7 +1138,6 @@ fn symbol_recommendation_from_run(run: &RecommendationRunDto) -> Option<SymbolRe
 fn stock_agent_fetch_plan_labels() -> Vec<&'static str> {
     vec![
         "stock_info",
-        "bid_ask",
         "kline_5m",
         "kline_1h",
         "kline_1d",
@@ -1124,55 +1145,50 @@ fn stock_agent_fetch_plan_labels() -> Vec<&'static str> {
     ]
 }
 
-async fn fetch_stock_agent_data(symbol: &str, runtime: &RuntimeSettingsDto) -> StockAgentData {
+async fn fetch_stock_agent_data(
+    settings_service: &SettingsService,
+    symbol: &str,
+    runtime: &RuntimeSettingsDto,
+) -> StockAgentData {
     let stock_info_symbol = symbol.to_string();
-    let bid_ask_symbol = symbol.to_string();
     let count = runtime.ai_kline_bar_count.max(1) as usize;
-    let use_bid_ask_data = runtime.use_bid_ask_data;
     let kline_symbols = runtime
         .ai_kline_frequencies
         .iter()
         .map(|frequency| (frequency.to_string(), symbol.to_string()))
         .collect::<Vec<_>>();
+    let stock_info_settings = settings_service.clone();
 
     let stock_info_task = fetch_agent_json("stock_info", move || {
-        crate::market::akshare::fetch_stock_info(&stock_info_symbol)
+        crate::market::akshare::fetch_stock_info_with_settings(
+            &stock_info_settings,
+            &stock_info_symbol,
+        )
     });
-    let bid_ask_task = async move {
-        if use_bid_ask_data {
-            fetch_agent_json("bid_ask", move || {
-                crate::market::akshare::fetch_bid_ask(&bid_ask_symbol)
-            })
-            .await
-        } else {
-            AgentFetchResult {
-                value: Some(json!({})),
-                message: Some("bid_ask 已按 AI 数据设置关闭。".into()),
-            }
-        }
-    };
     let kline_tasks = kline_symbols.into_iter().map(move |(frequency, symbol)| {
         let label = format!("kline_{frequency}");
+        let settings_service = settings_service.clone();
         async move {
             let frequency_for_fetch = frequency.clone();
             let result = fetch_agent_bars(&label, move || {
-                crate::market::akshare::fetch_history_bars(&symbol, &frequency_for_fetch, count)
+                crate::market::akshare::fetch_history_bars_with_settings(
+                    &settings_service,
+                    &symbol,
+                    &frequency_for_fetch,
+                    count,
+                )
             })
             .await;
             (frequency, result)
         }
     });
 
-    let (stock_info, bid_ask, kline_results) =
-        tokio::join!(stock_info_task, bid_ask_task, join_all(kline_tasks));
+    let (stock_info, kline_results) =
+        tokio::join!(stock_info_task, join_all(kline_tasks));
     let mut data = StockAgentData::default();
     data.stock_info = stock_info.value.unwrap_or_else(|| json!({}));
-    data.bid_ask = bid_ask.value.unwrap_or_else(|| json!({}));
     if let Some(message) = stock_info.message {
         data.messages.insert("stock_info".into(), message);
-    }
-    if let Some(message) = bid_ask.message {
-        data.messages.insert("bid_ask".into(), message);
     }
     for (frequency, result) in kline_results {
         if let Some(bars) = result.value {
@@ -1279,6 +1295,7 @@ fn select_aggregate_recommendation(
 
 pub async fn complete_text(
     settings_service: &SettingsService,
+    model_settings: &ModelUseCaseSettingsDto,
     system_prompt: &str,
     user_prompt: &str,
 ) -> anyhow::Result<Option<String>> {
@@ -1289,7 +1306,9 @@ pub async fn complete_text(
 
     let runtime = settings_service.get_runtime_settings();
     Ok(Some(
-        call_text_model(&runtime, &api_key, system_prompt, user_prompt).await?,
+        call_text_model(&runtime, model_settings, &api_key, system_prompt, user_prompt)
+            .await
+            .map(|value| strip_think_blocks(&value))?,
     ))
 }
 
@@ -1312,6 +1331,7 @@ pub async fn test_model_connection(
     let runtime = runtime_from_model_test_payload(payload);
     match call_text_model(
         &runtime,
+        &runtime.recommendation_model,
         &payload.model_api_key,
         "You are a connection test. Reply with the single word OK.",
         "Return OK.",
@@ -1442,7 +1462,6 @@ fn build_stock_agent_market_prompt(
         "ticker_bias": ticker_bias(row),
         "snapshot_age_sec": snapshot_age_seconds(&row.updated_at),
         "stock_info": agent_data.stock_info,
-        "bid_ask": agent_data.bid_ask,
         "kline_data": kline_data,
         "messages": agent_data.messages
     });
@@ -1451,7 +1470,10 @@ fn build_stock_agent_market_prompt(
             stock_context
                 .as_object_mut()
                 .expect("stock context should be an object")
-                .insert("financial_report_analysis".into(), json!(financial_report_analysis));
+                .insert(
+                    "financial_report_analysis".into(),
+                    json!(financial_report_analysis),
+                );
         }
     }
     serde_json::to_string(&json!({
@@ -1540,6 +1562,7 @@ fn shortlist_for_market(
 }
 
 async fn fetch_shortlist_candles(
+    settings_service: &SettingsService,
     _market_data_service: &MarketDataService,
     market_rows: &[MarketListRow],
     runtime: &RuntimeSettingsDto,
@@ -1547,24 +1570,33 @@ async fn fetch_shortlist_candles(
 ) -> PromptCandleData {
     let targets = shortlist_candle_targets(market_rows, runtime, &[]);
     let futures_list = targets.into_iter().map({
-        move |target| async move {
-            let symbol = target.symbol.clone();
-            let payload = tokio::task::spawn_blocking(move || {
-                crate::market::akshare::fetch_multi_frequency_bars(&symbol, 60)
-            })
-            .await
-            .ok()
-            .and_then(Result::ok);
+        let settings_service = settings_service.clone();
+        move |target| {
+            let settings_service = settings_service.clone();
+            async move {
+                let symbol = target.symbol.clone();
+                let settings_service = settings_service.clone();
+                let payload = tokio::task::spawn_blocking(move || {
+                    crate::market::akshare::fetch_multi_frequency_bars_with_settings(
+                        &settings_service,
+                        &symbol,
+                        60,
+                    )
+                })
+                .await
+                .ok()
+                .and_then(Result::ok);
 
-            let Some(payload) = payload else {
-                return (target.symbol, None, PromptKlineContext::default());
-            };
+                let Some(payload) = payload else {
+                    return (target.symbol, None, PromptKlineContext::default());
+                };
 
-            (
-                target.symbol,
-                Some("akshare".into()),
-                parse_prompt_kline_context(&payload),
-            )
+                (
+                    target.symbol,
+                    Some("akshare".into()),
+                    parse_prompt_kline_context(&payload),
+                )
+            }
         }
     });
 
@@ -1852,6 +1884,7 @@ fn parse_timestamp_millis(value: &str) -> Option<i64> {
 
 async fn call_openai_compatible(
     runtime: &RuntimeSettingsDto,
+    model_settings: &ModelUseCaseSettingsDto,
     api_key: &str,
     system_prompt: &str,
     user_prompt: &str,
@@ -1861,32 +1894,37 @@ async fn call_openai_compatible(
         "https://api.openai.com/v1",
         "chat/completions",
     );
+    let mut body = json!({
+        "model": runtime.model_name,
+        "temperature": model_settings.temperature,
+        "max_tokens": model_settings.max_tokens,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt }
+        ]
+    });
+    if model_settings.effort_level != "off" {
+        body["reasoning_effort"] = json!(model_settings.effort_level);
+    }
     let response = Client::new()
         .post(&endpoint)
         .bearer_auth(api_key)
-        .json(&json!({
-            "model": runtime.model_name,
-            "temperature": runtime.model_temperature,
-            "max_tokens": runtime.model_max_tokens,
-            "response_format": { "type": "json_object" },
-            "messages": [
-                { "role": "system", "content": system_prompt },
-                { "role": "user", "content": user_prompt }
-            ]
-        }))
+        .json(&body)
         .send()
         .await?;
     let status = response.status();
-    let body = response.text().await?;
+    let body_text = response.text().await?;
     if !status.is_success() {
-        bail!("openai-compatible provider returned {status} for {endpoint}: {body}");
+        bail!("openai-compatible provider returned {status} for {endpoint}: {body_text}");
     }
 
-    extract_openai_content(&body)
+    extract_openai_content(&body_text)
 }
 
 async fn call_text_model(
     runtime: &RuntimeSettingsDto,
+    model_settings: &ModelUseCaseSettingsDto,
     api_key: &str,
     system_prompt: &str,
     user_prompt: &str,
@@ -1895,14 +1933,15 @@ async fn call_text_model(
         .model_provider
         .eq_ignore_ascii_case("anthropic-compatible")
     {
-        call_anthropic_compatible(runtime, api_key, system_prompt, user_prompt).await
+        call_anthropic_compatible(runtime, model_settings, api_key, system_prompt, user_prompt).await
     } else {
-        call_openai_compatible(runtime, api_key, system_prompt, user_prompt).await
+        call_openai_compatible(runtime, model_settings, api_key, system_prompt, user_prompt).await
     }
 }
 
 async fn call_anthropic_compatible(
     runtime: &RuntimeSettingsDto,
+    model_settings: &ModelUseCaseSettingsDto,
     api_key: &str,
     system_prompt: &str,
     user_prompt: &str,
@@ -1912,46 +1951,69 @@ async fn call_anthropic_compatible(
         "https://api.anthropic.com/v1",
         "messages",
     );
+    let mut body = json!({
+        "model": runtime.model_name,
+        "max_tokens": model_settings.max_tokens,
+        "temperature": model_settings.temperature,
+        "system": system_prompt,
+        "messages": [
+            { "role": "user", "content": user_prompt }
+        ]
+    });
+    if model_settings.effort_level != "off" {
+        let budget_tokens = match model_settings.effort_level.as_str() {
+            "low" => 1024,
+            "medium" => 4096,
+            "high" => 16384,
+            _ => 0,
+        };
+        if budget_tokens > 0 {
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": budget_tokens
+            });
+        }
+    }
     let response = Client::new()
         .post(&endpoint)
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
-        .json(&json!({
-            "model": runtime.model_name,
-            "max_tokens": runtime.model_max_tokens,
-            "temperature": runtime.model_temperature,
-            "system": system_prompt,
-            "messages": [
-                { "role": "user", "content": user_prompt }
-            ]
-        }))
+        .json(&body)
         .send()
         .await?;
     let status = response.status();
-    let body = response.text().await?;
+    let body_text = response.text().await?;
     if !status.is_success() {
-        bail!("anthropic-compatible provider returned {status} for {endpoint}: {body}");
+        bail!("anthropic-compatible provider returned {status} for {endpoint}: {body_text}");
     }
 
-    extract_anthropic_content(&body)
+    extract_anthropic_content(&body_text)
 }
 
 fn runtime_from_model_test_payload(payload: &ModelConnectionTestPayloadDto) -> RuntimeSettingsDto {
+    let recommendation_model = ModelUseCaseSettingsDto {
+        temperature: payload.recommendation_model.temperature,
+        max_tokens: payload.recommendation_model.max_tokens,
+        max_context: payload.recommendation_model.max_context,
+        effort_level: payload.recommendation_model.effort_level.clone(),
+    };
     RuntimeSettingsDto {
         exchanges: Vec::new(),
         model_provider: payload.model_provider.clone(),
         model_name: payload.model_name.clone(),
         model_base_url: payload.model_base_url.clone(),
-        model_temperature: payload.model_temperature,
-        model_max_tokens: payload.model_max_tokens,
-        model_max_context: payload.model_max_context,
+        recommendation_model: recommendation_model.clone(),
+        assistant_model: recommendation_model.clone(),
+        financial_report_model: recommendation_model,
         has_stored_model_api_key: !payload.model_api_key.trim().is_empty(),
+        has_stored_xueqiu_token: false,
+        intraday_data_source: crate::models::default_intraday_data_source(),
+        historical_data_source: crate::models::default_historical_data_source(),
         auto_analyze_enabled: false,
         auto_analyze_frequency: "10m".into(),
         scan_scope: "all_markets".into(),
         watchlist_symbols: Vec::new(),
         daily_max_ai_calls: 24,
-        use_bid_ask_data: true,
         use_financial_report_data: false,
         ai_kline_bar_count: 60,
         ai_kline_frequencies: crate::models::default_ai_kline_frequencies(),

@@ -30,9 +30,15 @@ pub async fn start_fetch_snapshots(
 ) -> CommandResult<()> {
     let service = state.backtest_service.clone();
     let market_data_service = state.market_data_service.clone();
+    let settings_service = state.settings_service.clone();
     let runtime = state.settings_service.get_runtime_settings();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = service.fetch_snapshots(&dataset_id, &market_data_service, &runtime);
+        let _ = service.fetch_snapshots(
+            &dataset_id,
+            &market_data_service,
+            &settings_service,
+            &runtime,
+        );
     });
     Ok(())
 }
@@ -238,7 +244,12 @@ pub fn resume_pending_backtest_jobs(
             let settings_service = settings_service.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let runtime = settings_service.get_runtime_settings();
-                let _ = service.fetch_snapshots(&dataset_id, &market_data_service, &runtime);
+                let _ = service.fetch_snapshots(
+                    &dataset_id,
+                    &market_data_service,
+                    &settings_service,
+                    &runtime,
+                );
             });
         }
     }

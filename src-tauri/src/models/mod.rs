@@ -27,22 +27,63 @@ pub struct RuntimeNotificationSettingsDto {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelUseCaseSettingsDto {
+    #[serde(default = "default_model_temperature")]
+    pub temperature: f64,
+    #[serde(default = "default_model_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default = "default_model_max_context")]
+    pub max_context: u32,
+    #[serde(default)]
+    pub effort_level: String,
+}
+
+impl Default for ModelUseCaseSettingsDto {
+    fn default() -> Self {
+        Self {
+            temperature: default_model_temperature(),
+            max_tokens: default_model_max_tokens(),
+            max_context: default_model_max_context(),
+            effort_level: "off".into(),
+        }
+    }
+}
+
+fn default_model_temperature() -> f64 {
+    0.2
+}
+fn default_model_max_tokens() -> u32 {
+    900
+}
+fn default_model_max_context() -> u32 {
+    16_000
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeSettingsDto {
     pub exchanges: Vec<RuntimeExchangeSettingsDto>,
     pub model_provider: String,
     pub model_name: String,
     pub model_base_url: String,
-    pub model_temperature: f64,
-    pub model_max_tokens: u32,
-    pub model_max_context: u32,
+    #[serde(default)]
+    pub recommendation_model: ModelUseCaseSettingsDto,
+    #[serde(default)]
+    pub assistant_model: ModelUseCaseSettingsDto,
+    #[serde(default)]
+    pub financial_report_model: ModelUseCaseSettingsDto,
     pub has_stored_model_api_key: bool,
+    #[serde(default)]
+    pub has_stored_xueqiu_token: bool,
+    #[serde(default = "default_intraday_data_source")]
+    pub intraday_data_source: String,
+    #[serde(default = "default_historical_data_source")]
+    pub historical_data_source: String,
     pub auto_analyze_enabled: bool,
     pub auto_analyze_frequency: String,
     pub scan_scope: String,
     pub watchlist_symbols: Vec<String>,
     pub daily_max_ai_calls: u32,
-    #[serde(default = "default_use_bid_ask_data")]
-    pub use_bid_ask_data: bool,
     #[serde(default)]
     pub use_financial_report_data: bool,
     #[serde(default = "default_ai_kline_bar_count")]
@@ -102,6 +143,7 @@ pub struct RuntimeExchangeSecretDto {
 pub struct RuntimeSecretsSyncDto {
     pub persist: bool,
     pub model_api_key: Option<String>,
+    pub xueqiu_token: Option<String>,
     pub exchanges: Vec<RuntimeExchangeSecretDto>,
 }
 
@@ -145,6 +187,14 @@ pub struct BacktestFetchFailureDto {
     pub reason: String,
     pub error_detail: Option<String>,
     pub created_at: String,
+}
+
+pub fn default_intraday_data_source() -> String {
+    "sina".into()
+}
+
+pub fn default_historical_data_source() -> String {
+    "eastmoney".into()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -441,14 +491,30 @@ pub struct ModelConnectionTestPayloadDto {
     pub model_name: String,
     pub model_base_url: String,
     pub model_api_key: String,
-    pub model_temperature: f64,
-    pub model_max_tokens: u32,
-    pub model_max_context: u32,
+    #[serde(default)]
+    pub recommendation_model: ModelUseCaseSettingsDto,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionTestResultDto {
+    pub ok: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AkshareConnectionTestPayloadDto {
+    pub item_id: String,
+    pub intraday_data_source: String,
+    pub historical_data_source: String,
+    pub xueqiu_token: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AkshareConnectionTestResultDto {
+    pub item_id: String,
     pub ok: bool,
     pub message: String,
 }
@@ -1082,10 +1148,6 @@ fn default_signal_cooldown_minutes() -> u32 {
 
 fn default_signal_daily_max() -> u32 {
     50
-}
-
-fn default_use_bid_ask_data() -> bool {
-    true
 }
 
 fn default_ai_kline_bar_count() -> u32 {

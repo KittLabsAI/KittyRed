@@ -19,9 +19,8 @@ use crate::market::{akshare, MarketDataService};
 use crate::models::{
     BacktestDatasetDto, BacktestEquityPointDto, BacktestFetchFailureDto, BacktestFetchProgressDto,
     BacktestOpenPositionDto, BacktestRunDto, BacktestSignalDto, BacktestSummaryDto,
-    BacktestTradeDto,
-    CreateBacktestDatasetRequestDto, CreateBacktestRequestDto, MarketListRow, OhlcvBar,
-    RiskDecisionDto, RuntimeSettingsDto,
+    BacktestTradeDto, CreateBacktestDatasetRequestDto, CreateBacktestRequestDto, MarketListRow,
+    OhlcvBar, RiskDecisionDto, RuntimeSettingsDto,
 };
 use crate::recommendations::llm::{self, PositionContext, RECOMMENDATION_PROMPT_VERSION};
 use crate::settings::SettingsService;
@@ -56,7 +55,6 @@ struct BacktestSnapshot {
     kline_1d: String,
     kline_1w: String,
     kline_data_json: String,
-    bid_ask_json: Option<String>,
     stock_info: String,
 }
 
@@ -146,6 +144,7 @@ impl BacktestService {
         &self,
         dataset_id: &str,
         market_data_service: &MarketDataService,
+        settings_service: &SettingsService,
         runtime: &RuntimeSettingsDto,
     ) -> anyhow::Result<()> {
         let cancel = self.cancel_flag(dataset_id);
@@ -163,7 +162,13 @@ impl BacktestService {
         self.clear_dataset_fetch_state(dataset_id)?;
         self.set_dataset_estimated_total(dataset_id, estimated_total)?;
         self.update_dataset_status(dataset_id, "fetching", None, None)?;
-        let result = self.fetch_snapshots_inner(&dataset, market_data_service, runtime, &cancel);
+        let result = self.fetch_snapshots_inner(
+            &dataset,
+            market_data_service,
+            settings_service,
+            runtime,
+            &cancel,
+        );
         match result {
             Ok(outcome) => {
                 let message = (outcome.failures > 0).then(|| {
@@ -317,7 +322,7 @@ impl BacktestService {
             market_data_service,
             financial_report_service,
         )
-            .await?;
+        .await?;
         self.replay_trades(backtest_id).await
     }
 
@@ -462,15 +467,12 @@ impl BacktestService {
         };
         let open_positions = self.load_open_positions(backtest_id, &run.dataset_id)?;
         let trade_count = trades.len() as u32 * 2 + open_positions.len() as u32;
-        let winning_trade_actions = trades
-            .iter()
-            .filter(|trade| trade.pnl_cny > 0.0)
-            .count() as u32
-            * 2
-            + open_positions
-                .iter()
-                .filter(|position| position.unrealized_pnl_cny > 0.0)
-                .count() as u32;
+        let winning_trade_actions =
+            trades.iter().filter(|trade| trade.pnl_cny > 0.0).count() as u32 * 2
+                + open_positions
+                    .iter()
+                    .filter(|position| position.unrealized_pnl_cny > 0.0)
+                    .count() as u32;
         let win_rate = if trade_count == 0 {
             0.0
         } else {
@@ -508,6 +510,7 @@ impl BacktestService {
         &self,
         dataset: &BacktestDatasetDto,
         market_data_service: &MarketDataService,
+        settings_service: &SettingsService,
         runtime: &RuntimeSettingsDto,
         cancel: &AtomicBool,
     ) -> anyhow::Result<FetchOutcome> {
@@ -515,10 +518,21 @@ impl BacktestService {
             dataset,
             runtime,
             cancel,
-            |symbol, interval, count| {
-                load_or_fetch_bars(market_data_service, symbol, interval, count)
+            |symbol, interval, count, start_date, end_date| {
+                load_or_fetch_bars(
+                    market_data_service,
+                    settings_service,
+                    symbol,
+                    interval,
+                    count,
+                    start_date,
+                    end_date,
+                )
             },
-            |symbol| akshare::fetch_stock_info(symbol).unwrap_or_else(|_| serde_json::json!({})),
+            |symbol| {
+                akshare::fetch_stock_info_with_settings(settings_service, symbol)
+                    .unwrap_or_else(|_| serde_json::json!({}))
+            },
         )
     }
 
@@ -531,7 +545,7 @@ impl BacktestService {
         mut load_stock_info: G,
     ) -> anyhow::Result<FetchOutcome>
     where
-        F: FnMut(&str, &str, usize) -> anyhow::Result<Vec<OhlcvBar>>,
+        F: FnMut(&str, &str, usize, Option<&str>, Option<&str>) -> anyhow::Result<Vec<OhlcvBar>>,
         G: FnMut(&str) -> serde_json::Value,
     {
         let mut inserted = 0;
@@ -542,7 +556,13 @@ impl BacktestService {
             if cancel.load(Ordering::SeqCst) {
                 bail!("数据拉取已取消");
             }
-            let bars_5m = match load_bars(symbol, "5m", 900) {
+            let bars_5m = match load_bars(
+                symbol,
+                "5m",
+                900,
+                Some(dataset.start_date.as_str()),
+                Some(dataset.end_date.as_str()),
+            ) {
                 Ok(bars) => bars,
                 Err(error) => {
                     let timepoints = expected_timepoints(
@@ -604,6 +624,8 @@ impl BacktestService {
                         symbol,
                         &frequency,
                         runtime.ai_kline_bar_count.max(1) as usize,
+                        Some(dataset.start_date.as_str()),
+                        Some(dataset.end_date.as_str()),
                         &selected,
                         &mut load_bars,
                         &mut failures,
@@ -613,13 +635,6 @@ impl BacktestService {
             }
             let stock_info = load_stock_info(symbol);
             let stock_name = stock_name_from_info(&stock_info).unwrap_or_else(|| symbol.clone());
-            let bid_ask_json = runtime.use_bid_ask_data.then(|| {
-                serde_json::json!({
-                    "source": "historical_backtest",
-                    "last_price_source": "snapshot",
-                    "spread_bps_source": "snapshot"
-                })
-            });
             for (index, sampled) in selected.iter().enumerate() {
                 if cancel.load(Ordering::SeqCst) {
                     bail!("数据拉取已取消");
@@ -668,12 +683,6 @@ impl BacktestService {
                         )
                     })
                     .collect::<HashMap<_, _>>();
-                let bid_ask = bid_ask_json.as_ref().map(|value| {
-                    let mut value = value.clone();
-                    value["last_price"] = serde_json::json!(bar.close);
-                    value["spread_bps"] = serde_json::json!(DEFAULT_SPREAD_BPS);
-                    value
-                });
                 let legacy_5m = kline_data.get("5m").cloned().unwrap_or_default();
                 let legacy_1h = kline_data.get("1h").cloned().unwrap_or_default();
                 let legacy_1d = kline_data.get("1d").cloned().unwrap_or_default();
@@ -691,9 +700,6 @@ impl BacktestService {
                     serde_json::to_string(&legacy_1d)?,
                     serde_json::to_string(&legacy_1w)?,
                     serde_json::to_string(&kline_data)?,
-                    bid_ask
-                        .map(|value| serde_json::to_string(&value))
-                        .transpose()?,
                     serde_json::to_string(&stock_info)?,
                 );
                 match insert_result {
@@ -759,17 +765,10 @@ impl BacktestService {
                     bail!("回测已取消");
                 }
                 let row = market_row_from_snapshot(&snapshot);
-                let financial_report_analysis = backtest_financial_context(
-                    financial_report_service,
-                    runtime,
-                    &snapshot.symbol,
-                );
+                let financial_report_analysis =
+                    backtest_financial_context(financial_report_service, runtime, &snapshot.symbol);
                 let stock_info = serde_json::from_str(&snapshot.stock_info)
                     .unwrap_or_else(|_| serde_json::json!({}));
-                let bid_ask = snapshot
-                    .bid_ask_json
-                    .as_deref()
-                    .and_then(|value| serde_json::from_str(value).ok());
                 let kline_map = snapshot_kline_map(&snapshot);
                 let plan = complete_backtest_signal_with_retry(
                     Duration::from_secs(BACKTEST_SIGNAL_TIMEOUT_SECS),
@@ -782,7 +781,6 @@ impl BacktestService {
                             None::<&PositionContext>,
                             financial_report_analysis.clone(),
                             stock_info.clone(),
-                            bid_ask.clone(),
                             kline_map.clone(),
                         )
                         .await
@@ -893,7 +891,8 @@ impl BacktestService {
                 .map(|snapshot| (snapshot.symbol.clone(), snapshot))
                 .collect::<HashMap<_, _>>();
             latest_snapshots_by_symbol.extend(
-                items.iter()
+                items
+                    .iter()
                     .cloned()
                     .map(|snapshot| (snapshot.symbol.clone(), snapshot)),
             );
@@ -958,8 +957,7 @@ impl BacktestService {
                 .sum();
             let total_equity_cny: f64 = cash_cny + market_value_cny;
             latest_total_pnl_cny = total_equity_cny - BACKTEST_INITIAL_CAPITAL_CNY;
-            latest_total_pnl_percent =
-                latest_total_pnl_cny / BACKTEST_INITIAL_CAPITAL_CNY * 100.0;
+            latest_total_pnl_percent = latest_total_pnl_cny / BACKTEST_INITIAL_CAPITAL_CNY * 100.0;
             equity_curve.push(BacktestEquityPointDto {
                 captured_at: captured_at.clone(),
                 cumulative_pnl_percent: round2(latest_total_pnl_percent),
@@ -1032,7 +1030,7 @@ impl BacktestService {
             "SELECT snapshot_id, dataset_id, symbol, stock_name, captured_at, last_price,
                     high_price, low_price, change_24h, volume_24h, spread_bps,
                     kline_5m, kline_1h, kline_1d, kline_1w, kline_data_json,
-                    bid_ask_json, stock_info
+                    stock_info
              FROM backtest_snapshots
              WHERE dataset_id = ?1
              ORDER BY captured_at ASC, symbol ASC",
@@ -1055,8 +1053,7 @@ impl BacktestService {
                 kline_1d: row.get(13)?,
                 kline_1w: row.get(14)?,
                 kline_data_json: row.get(15)?,
-                bid_ask_json: row.get(16)?,
-                stock_info: row.get(17)?,
+                stock_info: row.get(16)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -1205,14 +1202,16 @@ impl BacktestService {
         symbol: &str,
         interval: &str,
         count: usize,
+        start_date: Option<&str>,
+        end_date: Option<&str>,
         selected: &[SampledBar<'_>],
         load_bars: &mut F,
         failures: &mut u32,
     ) -> anyhow::Result<Vec<OhlcvBar>>
     where
-        F: FnMut(&str, &str, usize) -> anyhow::Result<Vec<OhlcvBar>>,
+        F: FnMut(&str, &str, usize, Option<&str>, Option<&str>) -> anyhow::Result<Vec<OhlcvBar>>,
     {
-        match load_bars(symbol, interval, count) {
+        match load_bars(symbol, interval, count, start_date, end_date) {
             Ok(bars) => Ok(bars),
             Err(error) => {
                 let timepoints = selected
@@ -1332,7 +1331,6 @@ impl BacktestService {
         kline_1d: String,
         kline_1w: String,
         kline_data_json: String,
-        bid_ask_json: Option<String>,
         stock_info: String,
     ) -> anyhow::Result<()> {
         self.db
@@ -1344,8 +1342,8 @@ impl BacktestService {
               snapshot_id, dataset_id, symbol, stock_name, captured_at, last_price,
               high_price, low_price, change_24h, volume_24h, spread_bps,
               kline_5m, kline_1h, kline_1d, kline_1w, kline_data_json,
-              bid_ask_json, stock_info
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+              stock_info
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     format!("snap-{}", Uuid::new_v4()),
                     dataset.dataset_id,
@@ -1363,7 +1361,6 @@ impl BacktestService {
                     kline_1d,
                     kline_1w,
                     kline_data_json,
-                    bid_ask_json,
                     stock_info,
                 ],
             )?;
@@ -1692,15 +1689,15 @@ impl BacktestService {
             .filter_map(|trade| trade.signal_id.clone())
             .collect::<HashSet<_>>();
         let snapshots = self.load_snapshots(dataset_id)?;
-        let snapshots_by_symbol =
-            snapshots
-                .into_iter()
-                .fold(HashMap::<String, Vec<BacktestSnapshot>>::new(), |mut map, snapshot| {
-                    map.entry(snapshot.symbol.clone())
-                        .or_default()
-                        .push(snapshot);
-                    map
-                });
+        let snapshots_by_symbol = snapshots.into_iter().fold(
+            HashMap::<String, Vec<BacktestSnapshot>>::new(),
+            |mut map, snapshot| {
+                map.entry(snapshot.symbol.clone())
+                    .or_default()
+                    .push(snapshot);
+                map
+            },
+        );
 
         Ok(signals
             .into_iter()
@@ -1914,15 +1911,31 @@ fn trade_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BacktestTradeDto>
 
 fn load_or_fetch_bars(
     market_data_service: &MarketDataService,
+    settings_service: &SettingsService,
     symbol: &str,
     interval: &str,
     count: usize,
+    start_date: Option<&str>,
+    end_date: Option<&str>,
 ) -> anyhow::Result<Vec<OhlcvBar>> {
+    if start_date.is_some() || end_date.is_some() {
+        let bars = akshare::fetch_history_bars_in_range_with_settings(
+            settings_service,
+            symbol,
+            interval,
+            count,
+            start_date,
+            end_date,
+        )?;
+        let _ = market_data_service.cache_candle_bars(symbol, interval, &bars);
+        return Ok(bars);
+    }
     let cached = market_data_service.cached_candle_bars(symbol, interval, count);
     if cached.len() >= count.min(20) {
         return Ok(cached);
     }
-    let bars = akshare::fetch_history_bars(symbol, interval, count)?;
+    let bars =
+        akshare::fetch_history_bars_with_settings(settings_service, symbol, interval, count)?;
     let _ = market_data_service.cache_candle_bars(symbol, interval, &bars);
     Ok(bars)
 }
@@ -1968,13 +1981,16 @@ fn sampled_bars_with_targets<'a>(
             })
             .copied()
             .or_else(|| {
-                filtered.iter().find(|bar| {
-                    let normalized = normalize_bar_time(&bar.open_time);
-                    let date = normalized.get(0..10).unwrap_or("");
-                    date == target_date
-                        && normalized.as_str() >= target.as_str()
-                        && normalized > last_selected_time
-                }).copied()
+                filtered
+                    .iter()
+                    .find(|bar| {
+                        let normalized = normalize_bar_time(&bar.open_time);
+                        let date = normalized.get(0..10).unwrap_or("");
+                        date == target_date
+                            && normalized.as_str() >= target.as_str()
+                            && normalized > last_selected_time
+                    })
+                    .copied()
             });
         if let Some(bar) = matched {
             last_selected_time = normalize_bar_time(&bar.open_time);
@@ -2613,7 +2629,8 @@ mod tests {
     fn financial_report_service_with_analysis() -> FinancialReportService {
         let path =
             std::env::temp_dir().join(format!("kittyred-financial-{}.sqlite", Uuid::new_v4()));
-        let service = FinancialReportService::new(path).expect("financial report service should open");
+        let service =
+            FinancialReportService::new(path).expect("financial report service should open");
         service
             .seed_test_analysis("SHSE.600000")
             .expect("analysis should seed");
@@ -2672,7 +2689,7 @@ mod tests {
                 &dataset,
                 &runtime,
                 &cancel,
-                |_, interval, _| {
+                |_, interval, _, _, _| {
                     if interval == "5m" {
                         Ok(vec![
                             bar("2026-05-06 09:30:00", 8.7),
@@ -2702,6 +2719,49 @@ mod tests {
     }
 
     #[test]
+    fn fetch_requests_history_with_dataset_date_range() {
+        let service = test_service();
+        let dataset = insert_dataset(&service, &["SHSE.600000"]);
+        let cancel = AtomicBool::new(false);
+        let runtime = runtime_settings();
+        let requests = Arc::new(Mutex::new(Vec::<(
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )>::new()));
+        let requests_for_loader = requests.clone();
+
+        service
+            .fetch_snapshots_inner_with_loaders(
+                &dataset,
+                &runtime,
+                &cancel,
+                move |symbol, interval, _, start_date, end_date| {
+                    requests_for_loader
+                        .lock()
+                        .expect("requests lock poisoned")
+                        .push((
+                            symbol.to_string(),
+                            interval.to_string(),
+                            start_date.map(ToString::to_string),
+                            end_date.map(ToString::to_string),
+                        ));
+                    Ok(vec![bar("2026-05-06 09:30:00", 8.7)])
+                },
+                |_| serde_json::json!({"items": {"名称": "浦发银行"}}),
+            )
+            .expect("fetch should succeed");
+
+        let requests = requests.lock().expect("requests lock poisoned");
+        assert!(requests.iter().any(|(_, interval, start_date, end_date)| {
+            interval == "5m"
+                && start_date.as_deref() == Some(dataset.start_date.as_str())
+                && end_date.as_deref() == Some(dataset.end_date.as_str())
+        }));
+    }
+
+    #[test]
     fn fetch_fails_when_no_snapshots_are_produced() {
         let service = test_service();
         let dataset = insert_dataset(&service, &["SHSE.600000"]);
@@ -2713,7 +2773,7 @@ mod tests {
                 &dataset,
                 &runtime,
                 &cancel,
-                |_, _, _| Err(anyhow!("sina ssl disconnected")),
+                |_, _, _, _, _| Err(anyhow!("sina ssl disconnected")),
                 |_| serde_json::json!({}),
             )
             .expect_err("zero inserted snapshots should fail");
@@ -2790,7 +2850,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("snapshot should insert");
@@ -2911,7 +2970,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("snapshot should insert");
@@ -2996,7 +3054,9 @@ mod tests {
             .await
             .expect("replay should succeed");
 
-        let trades = service.list_trades(&backtest_id).expect("trades should load");
+        let trades = service
+            .list_trades(&backtest_id)
+            .expect("trades should load");
         assert!(trades.is_empty());
 
         let summary = service.summary(&backtest_id).expect("summary should load");
@@ -3028,7 +3088,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("snapshot should insert");
@@ -3124,7 +3183,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("snapshot should insert");
@@ -3188,7 +3246,15 @@ mod tests {
                 generated_at: now_rfc3339(),
             };
             service
-                .insert_signal(&backtest_id, signal_id, snapshot, &signal_run, "{}", "{}", "opened")
+                .insert_signal(
+                    &backtest_id,
+                    signal_id,
+                    snapshot,
+                    &signal_run,
+                    "{}",
+                    "{}",
+                    "opened",
+                )
                 .expect("signal should insert");
         }
 
@@ -3228,7 +3294,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("snapshot should insert");
@@ -3287,7 +3352,15 @@ mod tests {
             generated_at: now_rfc3339(),
         };
         service
-            .insert_signal(&backtest_id, "sig-1", &snapshot, &signal_run, "{}", "{}", "opened")
+            .insert_signal(
+                &backtest_id,
+                "sig-1",
+                &snapshot,
+                &signal_run,
+                "{}",
+                "{}",
+                "opened",
+            )
             .expect("signal should insert");
 
         let run = service
@@ -3313,7 +3386,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replay_equity_curve_carries_forward_latest_price_when_symbol_missing_current_timepoint() {
+    async fn replay_equity_curve_carries_forward_latest_price_when_symbol_missing_current_timepoint(
+    ) {
         let service = test_service();
         let dataset = insert_dataset(&service, &["SHSE.600000", "SZSE.000001"]);
         service
@@ -3330,7 +3404,6 @@ mod tests {
                 "[]".into(),
                 "[]".into(),
                 "{}".into(),
-                None,
                 "{}".into(),
             )
             .expect("sparse snapshot should insert");
@@ -3349,7 +3422,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("reference snapshot should insert");
@@ -3408,7 +3480,15 @@ mod tests {
             generated_at: now_rfc3339(),
         };
         service
-            .insert_signal(&backtest_id, "sig-1", &snapshot, &signal_run, "{}", "{}", "opened")
+            .insert_signal(
+                &backtest_id,
+                "sig-1",
+                &snapshot,
+                &signal_run,
+                "{}",
+                "{}",
+                "opened",
+            )
             .expect("signal should insert");
 
         let run = service
@@ -3457,7 +3537,6 @@ mod tests {
                     "[]".into(),
                     "[]".into(),
                     "{}".into(),
-                    None,
                     "{}".into(),
                 )
                 .expect("snapshot should insert");
@@ -3512,7 +3591,9 @@ mod tests {
 
         let positive_open_snapshot = snapshots
             .iter()
-            .find(|item| item.symbol == "SZSE.000001" && item.captured_at == "2026-05-06T09:30:00+08:00")
+            .find(|item| {
+                item.symbol == "SZSE.000001" && item.captured_at == "2026-05-06T09:30:00+08:00"
+            })
             .expect("positive snapshot should exist")
             .clone();
         let positive_open_signal = crate::models::RecommendationRunDto {
@@ -3560,7 +3641,9 @@ mod tests {
 
         let negative_open_snapshot = snapshots
             .iter()
-            .find(|item| item.symbol == "SZSE.000002" && item.captured_at == "2026-05-06T09:30:00+08:00")
+            .find(|item| {
+                item.symbol == "SZSE.000002" && item.captured_at == "2026-05-06T09:30:00+08:00"
+            })
             .expect("negative snapshot should exist")
             .clone();
         let negative_open_signal = crate::models::RecommendationRunDto {
@@ -3634,13 +3717,11 @@ mod tests {
 
     #[test]
     fn expected_timepoints_skip_holidays_when_calendar_marks_them_closed() {
-        let timepoints = expected_timepoints_with_trade_day_filter(
-            "2026-05-01",
-            "2026-05-07",
-            60,
-            |date| matches!(date.to_string().as_str(), "2026-05-06" | "2026-05-07"),
-        )
-        .expect("timepoints should build");
+        let timepoints =
+            expected_timepoints_with_trade_day_filter("2026-05-01", "2026-05-07", 60, |date| {
+                matches!(date.to_string().as_str(), "2026-05-06" | "2026-05-07")
+            })
+            .expect("timepoints should build");
 
         assert_eq!(
             timepoints,
@@ -3737,20 +3818,14 @@ mod tests {
                 .iter()
                 .map(|item| item.captured_at.clone())
                 .collect::<Vec<_>>(),
-            vec![
-                "2026-05-06T09:30:00+08:00",
-                "2026-05-06T10:30:00+08:00",
-            ]
+            vec!["2026-05-06T09:30:00+08:00", "2026-05-06T10:30:00+08:00",]
         );
         assert_eq!(
             selected
                 .iter()
                 .map(|item| normalize_bar_time(&item.bar.open_time))
                 .collect::<Vec<_>>(),
-            vec![
-                "2026-05-06T09:30:00+08:00",
-                "2026-05-06T10:30:00+08:00",
-            ]
+            vec!["2026-05-06T09:30:00+08:00", "2026-05-06T10:30:00+08:00",]
         );
     }
 

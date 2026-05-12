@@ -82,6 +82,34 @@ describe("MarketsPage", () => {
     });
   });
 
+  it("shows two decimal places for high-priced A-share quotes", async () => {
+    listMarkets.mockResolvedValueOnce([
+      {
+        symbol: "SHSE.688981",
+        baseAsset: "中芯国际",
+        marketType: "沪市A股",
+        marketSizeTier: "large" as const,
+        last: 102.4,
+        change24h: 1.23,
+        volume24h: 123000000,
+        spreadBps: 0,
+        venues: ["akshare"],
+        updatedAt: "2026-05-07T10:30:00+08:00",
+      },
+    ]);
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter>
+          <MarketsPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("中芯国际")).toBeInTheDocument();
+    expect(screen.getByText("¥102.40")).toBeInTheDocument();
+  });
+
 
   it("adds a searched A-share symbol to the watchlist and refreshes tickers", async () => {
     const user = userEvent.setup();

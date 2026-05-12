@@ -217,7 +217,8 @@ mod tests {
     #[tokio::test]
     async fn financial_report_tool_returns_cached_analysis_without_fetching() {
         let settings_path = unique_temp_path("assistant-settings-financial", "json");
-        let recommendation_path = unique_temp_path("assistant-recommendations-financial", "sqlite3");
+        let recommendation_path =
+            unique_temp_path("assistant-recommendations-financial", "sqlite3");
         let settings = SettingsService::new(settings_path.clone());
         let mut runtime = settings.get_runtime_settings();
         runtime.use_financial_report_data = true;
@@ -281,7 +282,10 @@ mod tests {
             json!(8.2)
         );
         assert!(payload.get("rawSections").is_none());
-        assert_eq!(payload["message"], json!("已读取本地缓存的财报 AI 分析结论。"));
+        assert_eq!(
+            payload["message"],
+            json!("已读取本地缓存的财报 AI 分析结论。")
+        );
 
         let _ = std::fs::remove_file(settings_path);
         let _ = std::fs::remove_file(recommendation_path);
@@ -802,7 +806,7 @@ impl AssistantService {
                     Some(service.context_value(
                         &session_id,
                         &system_prompt,
-                        runtime.model_max_context.max(1024) as usize,
+                        runtime.assistant_model.max_context.max(1024) as usize,
                     )),
                 );
             }
@@ -883,7 +887,7 @@ impl AssistantService {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| anyhow!("No model API key configured for Assistant."))?;
         let runtime = settings_service.get_runtime_settings();
-        let max_context = runtime.model_max_context.max(1024) as usize;
+        let max_context = runtime.assistant_model.max_context.max(1024) as usize;
         let system_prompt = assistant_system_prompt(settings_service);
         let run_id = self.begin_user_turn(session_id, user_input);
         self.emit_status(session_id, "running", &system_prompt, max_context);
@@ -1246,7 +1250,7 @@ async fn execute_tool(
             )
                 .or_else(|| optional_stock_code(&arguments))
                 .ok_or_else(|| anyhow!("stock_info requires stockCode"))?;
-            let info = akshare::fetch_stock_info(&symbol)?;
+            let info = akshare::fetch_stock_info_with_settings(settings_service, &symbol)?;
             Ok(json!({
                 "ok": true,
                 "stockCode": symbol,
@@ -1401,6 +1405,7 @@ async fn execute_tool(
                         "ashare",
                         &enabled_exchanges,
                         market_data_service,
+                        settings_service,
                         &runtime,
                         account_equity_usdt,
                     )
@@ -1433,6 +1438,7 @@ async fn execute_tool(
                     .scan_all_with_strategy_signals(
                         &enabled_exchanges,
                         market_data_service,
+                        settings_service,
                         &runtime,
                         account_equity_usdt,
                     )
@@ -1455,17 +1461,6 @@ async fn execute_tool(
                 }
             }
         }
-        "bid_ask" => {
-            let symbol = resolved_symbol(optional_stock_code(&arguments), market_data_service, &enabled_exchanges)
-                .or_else(|| optional_stock_code(&arguments))
-                .ok_or_else(|| anyhow!("bid_ask requires stockCode"))?;
-            Ok(json!({
-                "ok": true,
-                "stockCode": symbol,
-                "bidAsk": akshare::fetch_bid_ask(&symbol)?,
-            })
-            .to_string())
-        }
         "kline_data" => {
             let symbol = resolved_symbol(optional_stock_code(&arguments), market_data_service, &enabled_exchanges)
                 .or_else(|| optional_stock_code(&arguments))
@@ -1474,7 +1469,11 @@ async fn execute_tool(
             Ok(json!({
                 "ok": true,
                 "stockCode": symbol,
-                "klines": akshare::fetch_multi_frequency_bars(&symbol, count)?,
+                "klines": akshare::fetch_multi_frequency_bars_with_settings(
+                    settings_service,
+                    &symbol,
+                    count,
+                )?,
             })
             .to_string())
         }
@@ -1796,10 +1795,6 @@ fn summarize_tool_call(name: &str, arguments: &Value) -> String {
         "stock_info" => {
             let symbol = optional_stock_code(arguments).unwrap_or_else(|| "指定股票".into());
             format!("读取 {symbol} 的个股资料")
-        }
-        "bid_ask" => {
-            let symbol = optional_stock_code(arguments).unwrap_or_else(|| "指定股票".into());
-            format!("读取 {symbol} 的五档盘口")
         }
         "kline_data" => {
             let symbol = optional_stock_code(arguments).unwrap_or_else(|| "指定股票".into());

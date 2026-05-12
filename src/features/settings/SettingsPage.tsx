@@ -6,12 +6,17 @@ import {
   loadSettingsFormData,
   MODEL_PROVIDER_PRESETS,
   saveSettingsFormData,
+  testAkshareConnectionItem,
   testModelConnection,
-  type ModelInterfaceSetting,
+  type AkshareConnectionTestDraft,
+  type AkshareConnectionTestItemId,
   type AiKlineFrequency,
+  type EffortLevel,
+  type HistoricalDataSourceSetting,
+  type IntradayDataSourceSetting,
+  type ModelInterfaceSetting,
   type SettingsFormData,
 } from "../../lib/settings";
-import { getAkshareCurrentQuote } from "../../lib/akshare";
 import { useAppStore } from "../../store/appStore";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
@@ -46,6 +51,102 @@ const aiKlineFrequencyOptions: Array<{ id: AiKlineFrequency; label: string }> = 
   { id: "1w", label: "1周" },
   { id: "1M", label: "1月" },
 ];
+
+const intradayDataSourceOptions: Array<{
+  id: IntradayDataSourceSetting;
+  label: string;
+}> = [
+  { id: "sina", label: "新浪财经" },
+  { id: "eastmoney", label: "东方财富" },
+];
+
+const historicalDataSourceOptions: Array<{
+  id: HistoricalDataSourceSetting;
+  label: string;
+}> = [
+  { id: "sina", label: "新浪财经" },
+  { id: "eastmoney", label: "东方财富" },
+  { id: "tencent", label: "腾讯证券" },
+];
+
+const effortLevelOptions: Array<{ id: EffortLevel; label: string }> = [
+  { id: "off", label: "关闭" },
+  { id: "low", label: "低" },
+  { id: "medium", label: "中" },
+  { id: "high", label: "高" },
+];
+
+type AkshareConnectionRowStatus = "testing" | "success" | "error";
+
+type AkshareConnectionRow = {
+  id: AkshareConnectionTestItemId;
+  label: string;
+  sourceLabel: string;
+  status: AkshareConnectionRowStatus;
+  message: string;
+};
+
+const intradayDataSourceLabels: Record<IntradayDataSourceSetting, string> = {
+  sina: "新浪财经",
+  eastmoney: "东方财富",
+};
+
+const historicalDataSourceLabels: Record<HistoricalDataSourceSetting, string> = {
+  sina: "新浪财经",
+  eastmoney: "东方财富",
+  tencent: "腾讯证券",
+};
+
+const akshareConnectionItems: Array<{
+  id: AkshareConnectionTestItemId;
+  label: string;
+  sourceLabel: (form: SettingsFormData) => string;
+}> = [
+  { id: "quote", label: "个股实时行情", sourceLabel: () => "雪球接口" },
+  {
+    id: "intraday",
+    label: "分时数据",
+    sourceLabel: (form) => intradayDataSourceLabels[form.intradayDataSource],
+  },
+  {
+    id: "historical",
+    label: "历史行情数据",
+    sourceLabel: (form) => historicalDataSourceLabels[form.historicalDataSource],
+  },
+  { id: "financial", label: "财报数据", sourceLabel: () => "东方财富" },
+  { id: "companyInfo", label: "公司基础资料", sourceLabel: () => "雪球接口" },
+  { id: "tradeCalendar", label: "交易日历", sourceLabel: () => "新浪交易日历" },
+];
+
+function statusIcon(status: AkshareConnectionRowStatus) {
+  if (status === "success") {
+    return <span aria-label="成功" className="text-base font-semibold text-emerald-500">✓</span>;
+  }
+  if (status === "error") {
+    return <span aria-label="失败" className="text-base font-semibold text-red-500">✕</span>;
+  }
+  return <span aria-label="测试中" className="text-base font-semibold text-muted-foreground">○</span>;
+}
+
+function statusLabel(status: AkshareConnectionRowStatus) {
+  if (status === "success") {
+    return "成功";
+  }
+  if (status === "error") {
+    return "失败";
+  }
+  return "测试中";
+}
+
+function buildAkshareConnectionRows(form: SettingsFormData): AkshareConnectionRow[] {
+  return akshareConnectionItems.map((item) => ({
+    id: item.id,
+    label: item.label,
+    sourceLabel: item.sourceLabel(form),
+    status: "testing",
+    message: "测试中",
+  }));
+}
 
 function modelProviderOptions(currentPreset: string) {
   const options = [
@@ -97,6 +198,7 @@ export function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isTestingAkshare, setIsTestingAkshare] = useState(false);
   const [isTestingModel, setIsTestingModel] = useState(false);
+  const [akshareConnectionRows, setAkshareConnectionRows] = useState<AkshareConnectionRow[]>([]);
   const currentTab = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
 
   useEffect(() => {
@@ -135,20 +237,47 @@ export function SettingsPage() {
 
   async function handleTestAkshareConnection() {
     setIsTestingAkshare(true);
+    const testDraft: AkshareConnectionTestDraft = {
+      intradayDataSource: form.intradayDataSource,
+      historicalDataSource: form.historicalDataSource,
+      xueqiuToken: form.xueqiuToken,
+    };
+    const nextRows = buildAkshareConnectionRows(form);
+    setAkshareConnectionRows(nextRows);
+    setStatusMessage("正在测试 AKShare 连接...");
     try {
-      const result = await getAkshareCurrentQuote("SHSE.600000");
-      if (!result.ok) {
-        setStatusMessage(`AKShare 连接失败：${result.error ?? "未知错误"}`);
-        return;
-      }
-      const quote = result.data;
+      const results = await Promise.all(
+        akshareConnectionItems.map(async (item) => {
+          const result = await testAkshareConnectionItem(item.id, testDraft).catch((error) => ({
+            itemId: item.id,
+            ok: false,
+            message: String(error),
+          }));
+
+          setAkshareConnectionRows((current) =>
+            current.map((row) =>
+              row.id === item.id
+                ? {
+                    ...row,
+                    status: result.ok ? "success" : "error",
+                    message: result.message,
+                  }
+                : row,
+            ),
+          );
+
+          return result;
+        }),
+      );
+      const successCount = results.filter((item) => item.ok).length;
+      const failureCount = results.length - successCount;
       setStatusMessage(
-        quote
-          ? `AKShare 连接正常：${quote.symbol} 最新价 ${quote.last}。`
-          : "AKShare 连接正常。",
+        failureCount > 0
+          ? `AKShare 连接测试完成：${successCount} 项成功，${failureCount} 项失败。`
+          : `AKShare 连接测试完成：${successCount} 项成功。`,
       );
     } catch (error) {
-      setStatusMessage(`AKShare 连接失败：${String(error)}`);
+      setStatusMessage(`AKShare 连接测试失败：${String(error)}`);
     } finally {
       setIsTestingAkshare(false);
     }
@@ -162,9 +291,7 @@ export function SettingsPage() {
         modelName: form.modelName,
         modelBaseUrl: form.modelBaseUrl,
         modelApiKey: form.modelApiKey,
-        modelTemperature: form.modelTemperature,
-        modelMaxTokens: form.modelMaxTokens,
-        modelMaxContext: form.modelMaxContext,
+        recommendationModel: form.recommendationModel,
       });
       setStatusMessage(result.message);
     } catch (error) {
@@ -221,14 +348,90 @@ export function SettingsPage() {
               <Field label="数据接口">
                 <Input readOnly value="AKShare Python SDK" />
               </Field>
-              <Field label="连接测试">
-                <Button
-                  disabled={isTestingAkshare}
-                  onClick={() => void handleTestAkshareConnection()}
-                  type="button"
+              <Field label="分时数据">
+                <Select
+                  aria-label="分时数据"
+                  value={form.intradayDataSource}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      intradayDataSource: event.target.value as IntradayDataSourceSetting,
+                    }))
+                  }
                 >
-                  {isTestingAkshare ? "测试中..." : "测试 AKShare 连接"}
-                </Button>
+                  {intradayDataSourceOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="历史行情数据">
+                <Select
+                  aria-label="历史行情数据"
+                  value={form.historicalDataSource}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      historicalDataSource: event.target.value as HistoricalDataSourceSetting,
+                    }))
+                  }
+                >
+                  {historicalDataSourceOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="雪球 Token">
+                <Input
+                  aria-label="雪球 Token"
+                  placeholder={
+                    form.hasStoredXueqiuToken
+                      ? "已保存雪球 Token，可直接覆盖"
+                      : "请输入已登录雪球后的 xq_a_token"
+                  }
+                  type="password"
+                  value={form.xueqiuToken}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      xueqiuToken: event.target.value,
+                    }))
+                  }
+                />
+              </Field>
+              <p className="settings-copy text-sm text-muted-foreground">
+                新浪财经和腾讯证券的周线/月线由本地日线聚合生成。
+              </p>
+              <Field label="连接测试">
+                <div className="space-y-3">
+                  <Button
+                    disabled={isTestingAkshare}
+                    onClick={() => void handleTestAkshareConnection()}
+                    type="button"
+                  >
+                    {isTestingAkshare ? "测试中..." : "测试 AKShare 连接"}
+                  </Button>
+                  {akshareConnectionRows.length > 0 ? (
+                    <div className="grid gap-2">
+                      {akshareConnectionRows.map((row) => (
+                        <div
+                          key={row.id}
+                          className="flex items-center justify-between rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm"
+                          title={row.message}
+                        >
+                          <span>{`${row.label} · ${row.sourceLabel}`}</span>
+                          <span className="inline-flex items-center gap-2">
+                            {statusIcon(row.status)}
+                            <span>{statusLabel(row.status)}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </Field>
             </div>
           ) : null}
@@ -290,18 +493,90 @@ export function SettingsPage() {
                   <Input aria-label="接口地址" value={form.modelBaseUrl} onChange={(event) => setForm((current) => ({ ...current, modelBaseUrl: event.target.value }))} />
                 </Field>
                 <Field label="模型 API Key">
-                  <Input aria-label="模型 API Key" type="password" value={form.modelApiKey} onChange={(event) => setForm((current) => ({ ...current, modelApiKey: event.target.value }))} />
-                </Field>
-                <Field label="温度">
-                  <Input aria-label="温度" max={2} min={0} step="0.1" type="number" value={form.modelTemperature} onChange={(event) => setForm((current) => ({ ...current, modelTemperature: Number(event.target.value || 0) }))} />
-                </Field>
-                <Field label="最大输出 Token">
-                  <Input aria-label="最大输出 Token" min={1} step="1" type="number" value={form.modelMaxTokens} onChange={(event) => setForm((current) => ({ ...current, modelMaxTokens: Number(event.target.value || 1) }))} />
-                </Field>
-                <Field label="最大上下文 Token">
-                  <Input aria-label="最大上下文 Token" min={1024} step="1024" type="number" value={form.modelMaxContext} onChange={(event) => setForm((current) => ({ ...current, modelMaxContext: Number(event.target.value || 1024) }))} />
+                  <Input
+                    aria-label="模型 API Key"
+                    placeholder={
+                      form.hasStoredModelApiKey
+                        ? "已保存 API Key，可直接覆盖"
+                        : undefined
+                    }
+                    type="password"
+                    value={form.modelApiKey}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        modelApiKey: event.target.value,
+                      }))
+                    }
+                  />
                 </Field>
               </div>
+              <section className="settings-section-block">
+                <span className="section-label">AI推荐/回测</span>
+                <p className="settings-copy text-sm text-muted-foreground">控制推荐生成和回测分析的模型参数。</p>
+                <div className="form-grid form-grid--four">
+                  <Field label="温度">
+                    <Input aria-label="推荐模型温度" max={2} min={0} step="0.1" type="number" value={form.recommendationModel.temperature} onChange={(event) => setForm((current) => ({ ...current, recommendationModel: { ...current.recommendationModel, temperature: Number(event.target.value || 0) } }))} />
+                  </Field>
+                  <Field label="最大输出 Token">
+                    <Input aria-label="推荐模型最大输出 Token" min={1} step="1" type="number" value={form.recommendationModel.maxTokens} onChange={(event) => setForm((current) => ({ ...current, recommendationModel: { ...current.recommendationModel, maxTokens: Number(event.target.value || 1) } }))} />
+                  </Field>
+                  <Field label="最大上下文 Token">
+                    <Input aria-label="推荐模型最大上下文 Token" min={1024} step="1024" type="number" value={form.recommendationModel.maxContext} onChange={(event) => setForm((current) => ({ ...current, recommendationModel: { ...current.recommendationModel, maxContext: Number(event.target.value || 1024) } }))} />
+                  </Field>
+                  <Field label="思考深度">
+                    <Select aria-label="推荐模型思考深度" value={form.recommendationModel.effortLevel} onChange={(event) => setForm((current) => ({ ...current, recommendationModel: { ...current.recommendationModel, effortLevel: event.target.value as EffortLevel } }))}>
+                      {effortLevelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              </section>
+              <section className="settings-section-block">
+                <span className="section-label">AI助手</span>
+                <p className="settings-copy text-sm text-muted-foreground">控制 AI 对话助手的模型参数。</p>
+                <div className="form-grid form-grid--four">
+                  <Field label="温度">
+                    <Input aria-label="助手模型温度" max={2} min={0} step="0.1" type="number" value={form.assistantModel.temperature} onChange={(event) => setForm((current) => ({ ...current, assistantModel: { ...current.assistantModel, temperature: Number(event.target.value || 0) } }))} />
+                  </Field>
+                  <Field label="最大输出 Token">
+                    <Input aria-label="助手模型最大输出 Token" min={1} step="1" type="number" value={form.assistantModel.maxTokens} onChange={(event) => setForm((current) => ({ ...current, assistantModel: { ...current.assistantModel, maxTokens: Number(event.target.value || 1) } }))} />
+                  </Field>
+                  <Field label="最大上下文 Token">
+                    <Input aria-label="助手模型最大上下文 Token" min={1024} step="1024" type="number" value={form.assistantModel.maxContext} onChange={(event) => setForm((current) => ({ ...current, assistantModel: { ...current.assistantModel, maxContext: Number(event.target.value || 1024) } }))} />
+                  </Field>
+                  <Field label="思考深度">
+                    <Select aria-label="助手模型思考深度" value={form.assistantModel.effortLevel} onChange={(event) => setForm((current) => ({ ...current, assistantModel: { ...current.assistantModel, effortLevel: event.target.value as EffortLevel } }))}>
+                      {effortLevelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              </section>
+              <section className="settings-section-block">
+                <span className="section-label">AI财报分析</span>
+                <p className="settings-copy text-sm text-muted-foreground">控制财报 AI 分析的模型参数。</p>
+                <div className="form-grid form-grid--four">
+                  <Field label="温度">
+                    <Input aria-label="财报模型温度" max={2} min={0} step="0.1" type="number" value={form.financialReportModel.temperature} onChange={(event) => setForm((current) => ({ ...current, financialReportModel: { ...current.financialReportModel, temperature: Number(event.target.value || 0) } }))} />
+                  </Field>
+                  <Field label="最大输出 Token">
+                    <Input aria-label="财报模型最大输出 Token" min={1} step="1" type="number" value={form.financialReportModel.maxTokens} onChange={(event) => setForm((current) => ({ ...current, financialReportModel: { ...current.financialReportModel, maxTokens: Number(event.target.value || 1) } }))} />
+                  </Field>
+                  <Field label="最大上下文 Token">
+                    <Input aria-label="财报模型最大上下文 Token" min={1024} step="1024" type="number" value={form.financialReportModel.maxContext} onChange={(event) => setForm((current) => ({ ...current, financialReportModel: { ...current.financialReportModel, maxContext: Number(event.target.value || 1024) } }))} />
+                  </Field>
+                  <Field label="思考深度">
+                    <Select aria-label="财报模型思考深度" value={form.financialReportModel.effortLevel} onChange={(event) => setForm((current) => ({ ...current, financialReportModel: { ...current.financialReportModel, effortLevel: event.target.value as EffortLevel } }))}>
+                      {effortLevelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              </section>
               <div className="hero-panel__actions">
                 <Button
                   disabled={isTestingModel}
@@ -344,17 +619,6 @@ export function SettingsPage() {
                     </Field>
                   </div>
                   <div className="settings-ai-row settings-ai-row--inputs">
-                    <Field label="使用买卖盘数据">
-                      <div className="settings-ai-toggle-box">
-                        <span>使用买卖盘数据</span>
-                        <input
-                          aria-label="使用买卖盘数据"
-                          checked={form.useBidAskData}
-                          onChange={(event) => setForm((current) => ({ ...current, useBidAskData: event.target.checked }))}
-                          type="checkbox"
-                        />
-                      </div>
-                    </Field>
                     <Field label="使用财报数据">
                       <div className="settings-ai-toggle-box">
                         <span>使用财报数据</span>

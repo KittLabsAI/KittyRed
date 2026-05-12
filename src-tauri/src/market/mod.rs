@@ -852,6 +852,7 @@ impl MarketDataService {
 
     pub async fn refresh_ticker_cache_from_akshare(
         &self,
+        settings_service: &crate::settings::SettingsService,
         watchlist_symbols: &[String],
     ) -> anyhow::Result<Vec<MarketListRow>> {
         let symbols = normalize_a_share_watchlist(watchlist_symbols);
@@ -859,7 +860,7 @@ impl MarketDataService {
             return Ok(Vec::new());
         }
 
-        let quotes = akshare::fetch_current_quotes(&symbols)?;
+        let quotes = akshare::fetch_current_quotes_with_settings(settings_service, &symbols)?;
         let rows = quotes
             .into_iter()
             .map(akshare_quote_to_market_row)
@@ -871,8 +872,11 @@ impl MarketDataService {
         Ok(rows)
     }
 
-    pub fn refresh_a_share_symbol_cache_from_akshare(&self) -> anyhow::Result<usize> {
-        let symbols = akshare::fetch_stock_universe()?;
+    pub fn refresh_a_share_symbol_cache_from_akshare(
+        &self,
+        settings_service: &crate::settings::SettingsService,
+    ) -> anyhow::Result<usize> {
+        let symbols = akshare::fetch_stock_universe_with_settings(settings_service)?;
         if let Some(cache) = &self.ticker_cache {
             cache
                 .lock()
@@ -897,7 +901,8 @@ impl MarketDataService {
             }
         }
 
-        let symbols = akshare::fetch_stock_universe()?;
+        let settings = crate::settings::SettingsService::default();
+        let symbols = akshare::fetch_stock_universe_with_settings(&settings)?;
         if let Some(cache) = &self.ticker_cache {
             let cache = cache.lock().expect("market ticker cache lock poisoned");
             cache.upsert_a_share_symbols(&symbols)?;
@@ -999,6 +1004,16 @@ impl MarketDataService {
             .expect("market ticker cache lock poisoned")
             .list_candles(symbol, interval, limit)
             .unwrap_or_default()
+    }
+
+    pub fn clear_cached_candle_bars(&self) -> anyhow::Result<()> {
+        let Some(cache) = &self.ticker_cache else {
+            return Ok(());
+        };
+        cache
+            .lock()
+            .expect("market ticker cache lock poisoned")
+            .clear_candles()
     }
 
     pub fn cached_market_row_for_exchanges(

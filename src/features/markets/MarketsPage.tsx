@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/ca
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TableShell } from "../../components/ui/table";
-import { formatCompact, formatPercent } from "../../lib/format";
+import { formatCompact, formatPercent, formatStockPrice } from "../../lib/format";
 import type { MarketRow } from "../../lib/types";
 import {
   listMarkets,
@@ -22,14 +22,6 @@ function marketLabel(row: MarketRow) {
   if (row.symbol.startsWith("SHSE.")) return "沪市A股";
   if (row.symbol.startsWith("SZSE.")) return "深市A股";
   return row.marketType;
-}
-
-function formatCny(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
-    style: "currency",
-    currency: "CNY",
-    maximumFractionDigits: value >= 100 ? 0 : 2,
-  }).format(value);
 }
 
 function messageFromError(error: unknown) {
@@ -226,7 +218,7 @@ export function MarketsPage() {
                   <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{row.symbol}</TableCell>
                   <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{row.baseAsset}</TableCell>
                   <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{marketLabel(row)}</TableCell>
-                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{formatCny(row.last)}</TableCell>
+                  <TableCell className="cursor-pointer" onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>{formatStockPrice(row.last)}</TableCell>
                   <TableCell className={`cursor-pointer ${row.change24h >= 0 ? "positive-text" : "negative-text"}`} onClick={() => navigate(`/pair-detail?symbol=${encodeURIComponent(row.symbol)}`)}>
                     {formatPercent(row.change24h)}
                   </TableCell>

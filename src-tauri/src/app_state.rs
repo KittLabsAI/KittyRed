@@ -96,6 +96,7 @@ mod tests {
 }
 
 pub struct AppState {
+    pub app_handle: tauri::AppHandle,
     pub settings_service: SettingsService,
     pub job_service: JobService,
     pub market_data_service: MarketDataService,
@@ -133,6 +134,7 @@ impl AppState {
             JobService::new(job_history_path).unwrap_or_else(|_| JobService::default());
 
         let state = Self {
+            app_handle: app_handle.clone(),
             settings_service,
             job_service,
             market_data_service: MarketDataService::new(market_cache_path)
@@ -167,6 +169,7 @@ impl AppState {
         crate::commands::paper::resume_pending_paper_order_jobs(
             state.job_service.clone(),
             state.paper_service.clone(),
+            state.settings_service.clone(),
         );
         crate::commands::backtest::resume_pending_backtest_jobs(
             state.backtest_service.clone(),
@@ -174,7 +177,10 @@ impl AppState {
             state.settings_service.clone(),
             state.financial_report_service.clone(),
         );
-        spawn_stock_universe_cache_worker(state.market_data_service.clone());
+        spawn_stock_universe_cache_worker(
+            state.settings_service.clone(),
+            state.market_data_service.clone(),
+        );
         state
     }
 }
@@ -228,10 +234,13 @@ fn spawn_market_ticker_refresh_worker(
     });
 }
 
-fn spawn_stock_universe_cache_worker(market_data_service: MarketDataService) {
+fn spawn_stock_universe_cache_worker(
+    settings_service: SettingsService,
+    market_data_service: MarketDataService,
+) {
     tauri::async_runtime::spawn(async move {
         loop {
-            run_stock_universe_cache_cycle(&market_data_service).await;
+            run_stock_universe_cache_cycle(&settings_service, &market_data_service).await;
             tokio::time::sleep(Duration::from_secs(60 * 60)).await;
         }
     });
@@ -257,7 +266,7 @@ async fn run_market_ticker_refresh_cycle(
     };
 
     match market_data_service
-        .refresh_ticker_cache_from_akshare(&runtime.watchlist_symbols)
+        .refresh_ticker_cache_from_akshare(settings_service, &runtime.watchlist_symbols)
         .await
     {
         Ok(rows) => job_service.finish_job(
@@ -277,8 +286,13 @@ async fn run_market_ticker_refresh_cycle(
     }
 }
 
-async fn run_stock_universe_cache_cycle(market_data_service: &MarketDataService) {
-    if let Err(error) = market_data_service.refresh_a_share_symbol_cache_from_akshare() {
+async fn run_stock_universe_cache_cycle(
+    settings_service: &SettingsService,
+    market_data_service: &MarketDataService,
+) {
+    if let Err(error) =
+        market_data_service.refresh_a_share_symbol_cache_from_akshare(settings_service)
+    {
         eprintln!("Failed to warm A-share stock universe cache: {error}");
     }
 }

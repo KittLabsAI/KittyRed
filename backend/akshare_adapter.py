@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import json
 import queue
@@ -8,6 +9,7 @@ import time
 from typing import Any, Callable
 
 import pandas as pd
+import requests
 
 
 class AkshareAdapter:
@@ -18,47 +20,26 @@ class AkshareAdapter:
         quote_attempts: int = 2,
         history_attempts: int = 3,
         history_retry_backoff_seconds: float = 0.25,
+        xueqiu_token: str = "",
+        intraday_data_source: str = "sina",
+        historical_data_source: str = "eastmoney",
     ):
         self.client = client
         self.now = now or datetime.now
         self.quote_attempts = max(1, quote_attempts)
         self.history_attempts = max(1, history_attempts)
         self.history_retry_backoff_seconds = max(0, history_retry_backoff_seconds)
-
+        self.xueqiu_token = xueqiu_token.strip()
+        self.intraday_data_source = self._normalize_intraday_data_source(intraday_data_source)
+        self.historical_data_source = self._normalize_historical_data_source(
+            historical_data_source
+        )
     def current_quote(self, symbol: str) -> dict[str, Any]:
         clean_symbol = self._normalize_symbol(symbol)
         if not clean_symbol:
             return self._empty_quote(symbol)
 
-        try:
-            return self._xueqiu_quote(clean_symbol)
-        except Exception:
-            pass
-
-        code = self._akshare_code(clean_symbol)
-        spot_row = self._spot_row_for_code(code)
-        try:
-            rows = self._stock_bid_ask(code)
-        except Exception:
-            raise
-
-        values = {
-            str(row["item"]): row["value"]
-            for _, row in rows.iterrows()
-        }
-        return {
-            "symbol": clean_symbol,
-            "name": self._spot_value(spot_row, "名称", ""),
-            "last": self._number(values.get("最新", 0)),
-            "open": self._number(values.get("今开", 0)),
-            "high": self._number(values.get("最高", 0)),
-            "low": self._number(values.get("最低", 0)),
-            "change_pct": self._number(self._spot_value(spot_row, "涨跌幅", 0)),
-            "volume": self._number(values.get("总手", 0)) * 100,
-            "amount": self._number(values.get("金额", 0)),
-            "updated_at": str(self._spot_value(spot_row, "更新时间", "")),
-            "source": "akshare",
-        }
+        return self._xueqiu_quote(clean_symbol)
 
     def current_quotes(self, symbols: list[str]) -> list[dict[str, Any]]:
         clean_symbols = [self._normalize_symbol(symbol) for symbol in symbols]
@@ -66,13 +47,19 @@ class AkshareAdapter:
         if not clean_symbols:
             return []
 
+        max_workers = min(10, len(clean_symbols))
         last_error = None
         quotes = []
-        for symbol in clean_symbols:
-            try:
-                quotes.append(self._xueqiu_quote(symbol))
-            except Exception as error:
-                last_error = error
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(self._xueqiu_quote, symbol)
+                for symbol in clean_symbols
+            ]
+            for future in futures:
+                try:
+                    quotes.append(future.result())
+                except Exception as error:
+                    last_error = error
         if not quotes and last_error is not None:
             raise last_error
         return quotes
@@ -83,6 +70,8 @@ class AkshareAdapter:
         frequency: str,
         count: int,
         merge_realtime: bool = True,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> list[dict[str, Any]]:
         clean_symbol = self._normalize_symbol(symbol)
         if not clean_symbol:
@@ -92,39 +81,25 @@ class AkshareAdapter:
         start = end - timedelta(days=max(count, 1) + 60)
         if self._is_intraday_frequency(frequency):
             rows = self._retry_history_request(
-                lambda: self.client.stock_zh_a_minute(
-                    symbol=self._akshare_daily_symbol(clean_symbol),
-                    period=self._akshare_minute_period(frequency),
-                    adjust="",
+                lambda: self._load_intraday_rows(
+                    clean_symbol, frequency, start_date, end_date
                 )
             )
-            return self._sina_minute_rows_to_bars(rows.tail(max(count, 1)))
+            bars = self._intraday_rows_to_bars(rows)
+            bars = self._filter_bars_by_date(bars, start_date, end_date)
+            return bars[-max(count, 1) :]
 
-        try:
-            rows = self.client.stock_zh_a_hist(
-                symbol=self._akshare_code(clean_symbol),
-                period=self._akshare_period(frequency),
-                start_date=start.strftime("%Y%m%d"),
-                end_date=end.strftime("%Y%m%d"),
-                adjust="qfq",
-                timeout=3,
-            )
-        except Exception:
-            daily_rows = self.client.stock_zh_a_daily(
-                symbol=self._akshare_daily_symbol(clean_symbol),
-                adjust="",
-            )
-            bars = self._daily_rows_to_bars(clean_symbol, daily_rows.tail(max(count, 1)))
-            if frequency.lower() in {"1w", "weekly"}:
-                bars = self._daily_bars_to_weekly_bars(bars)
-            if merge_realtime:
-                return self._merge_realtime_bars(clean_symbol, frequency, bars)
-            return bars
-
-        tail = rows.tail(max(count, 1))
-        bars = self._hist_rows_to_bars(tail, "日期")
+        bars = self._load_historical_bars(
+            clean_symbol,
+            frequency,
+            (start_date or start.strftime("%Y%m%d")).replace("-", ""),
+            (end_date or end.strftime("%Y%m%d")).replace("-", ""),
+        )
+        bars = self._filter_bars_by_date(bars, start_date, end_date)
+        bars = bars[-max(count, 1) :]
         if merge_realtime:
-            return self._merge_realtime_bars(clean_symbol, frequency, bars)
+            bars = self._merge_realtime_bars(clean_symbol, frequency, bars)
+            return self._filter_bars_by_date(bars, start_date, end_date)
         return bars
 
     def stock_info(self, symbol: str) -> dict[str, Any]:
@@ -134,6 +109,7 @@ class AkshareAdapter:
 
         rows = self.client.stock_individual_basic_info_xq(
             symbol=self._xueqiu_symbol(clean_symbol),
+            token=self.xueqiu_token or None,
         )
         items = {
             str(row["item"]): row["value"]
@@ -143,44 +119,6 @@ class AkshareAdapter:
             "stock_code": clean_symbol,
             "items": items,
             "source": "akshare:xueqiu_basic",
-        }
-
-    def bid_ask(self, symbol: str) -> dict[str, Any]:
-        clean_symbol = self._normalize_symbol(symbol)
-        if not clean_symbol:
-            return {
-                "stock_code": symbol,
-                "bid_levels": [],
-                "ask_levels": [],
-                "source": "akshare:eastmoney_bid_ask",
-            }
-
-        rows = self._stock_bid_ask(self._akshare_code(clean_symbol))
-        values = {
-            str(row["item"]): row["value"]
-            for _, row in rows.iterrows()
-        }
-        return {
-            "stock_code": clean_symbol,
-            "last_price": self._number(values.get("最新", 0)),
-            "average_price": self._number(values.get("均价", 0)),
-            "change_percent": self._number(values.get("涨幅", 0)),
-            "change_amount": self._number(values.get("涨跌", 0)),
-            "volume": self._number(values.get("总手", 0)) * 100,
-            "turnover": self._number(values.get("金额", 0)),
-            "turnover_rate": self._number(values.get("换手", 0)),
-            "volume_ratio": self._number(values.get("量比", 0)),
-            "high": self._number(values.get("最高", 0)),
-            "low": self._number(values.get("最低", 0)),
-            "open": self._number(values.get("今开", 0)),
-            "previous_close": self._number(values.get("昨收", 0)),
-            "limit_up": self._number(values.get("涨停", 0)),
-            "limit_down": self._number(values.get("跌停", 0)),
-            "outer_volume": self._number(values.get("外盘", 0)) * 100,
-            "inner_volume": self._number(values.get("内盘", 0)) * 100,
-            "bid_levels": self._price_levels(values, "buy"),
-            "ask_levels": self._price_levels(values, "sell"),
-            "source": "akshare:eastmoney_bid_ask",
         }
 
     def multi_frequency_bars(
@@ -254,6 +192,19 @@ class AkshareAdapter:
             "fetched_at": self.now().isoformat(),
         }
 
+    def financial_report_probe(self) -> dict[str, Any]:
+        report_dates = self._financial_report_dates(1)
+        if not report_dates:
+            raise ValueError("未找到可用财报报告期")
+        report_date = report_dates[0]
+        frame = self.client.stock_yjkb_em(date=report_date)
+        return {
+            "endpoint": "stock_yjkb_em",
+            "report_date": report_date,
+            "row_count": int(len(frame.index)),
+            "source": "akshare:stock_yjkb_em",
+        }
+
     def _parallel_kline_requests(
         self,
         requests: dict[str, Callable[[], list[dict[str, Any]]]],
@@ -318,8 +269,8 @@ class AkshareAdapter:
             "import json, sys, akshare as ak; "
             "from backend.akshare_adapter import AkshareAdapter; "
             "symbol=sys.argv[1]; frequency=sys.argv[2]; count=int(sys.argv[3]); "
-            "merge_realtime=sys.argv[4] == '1'; "
-            "bars=AkshareAdapter(ak).history_bars(symbol, frequency, count, merge_realtime=merge_realtime); "
+            "merge_realtime=sys.argv[4] == '1'; xueqiu_token=sys.argv[5]; intraday_data_source=sys.argv[6]; historical_data_source=sys.argv[7]; "
+            "bars=AkshareAdapter(ak, xueqiu_token=xueqiu_token, intraday_data_source=intraday_data_source, historical_data_source=historical_data_source).history_bars(symbol, frequency, count, merge_realtime=merge_realtime); "
             "print(json.dumps(bars, ensure_ascii=False))"
         )
         processes = {
@@ -332,6 +283,9 @@ class AkshareAdapter:
                     frequency,
                     str(count),
                     "1" if merge_realtime else "0",
+                    self.xueqiu_token,
+                    self.intraday_data_source,
+                    self.historical_data_source,
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -381,16 +335,112 @@ class AkshareAdapter:
             raise last_error
         return load()
 
+    def _load_intraday_rows(
+        self,
+        symbol: str,
+        frequency: str,
+        start_date: str | None,
+        end_date: str | None,
+    ) -> pd.DataFrame:
+        period = self._akshare_minute_period(frequency)
+        if self.intraday_data_source == "eastmoney":
+            return self.client.stock_zh_a_hist_min_em(
+                symbol=self._akshare_code(symbol),
+                start_date=(start_date or "1979-09-01 09:32:00"),
+                end_date=(end_date or "2222-01-01 09:32:00"),
+                period=period,
+                adjust="",
+            )
+        return self.client.stock_zh_a_minute(
+            symbol=self._akshare_daily_symbol(symbol),
+            period=period,
+            adjust="",
+        )
+
+    def _load_historical_bars(
+        self,
+        symbol: str,
+        frequency: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        normalized = frequency.lower()
+        if self.historical_data_source == "eastmoney":
+            try:
+                rows = self.client.stock_zh_a_hist(
+                    symbol=self._akshare_code(symbol),
+                    period=self._akshare_period(frequency),
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq",
+                    timeout=3,
+                )
+                return self._hist_rows_to_bars(rows, "日期")
+            except Exception:
+                daily_rows = self.client.stock_zh_a_daily(
+                    symbol=self._akshare_daily_symbol(symbol),
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq",
+                )
+                bars = self._daily_rows_to_bars(symbol, daily_rows)
+                if normalized in {"1w", "weekly"}:
+                    return self._daily_bars_to_weekly_bars(bars)
+                if normalized in {"1m", "monthly"}:
+                    return self._daily_bars_to_monthly_bars(bars)
+                return bars
+
+        daily_rows = self._load_daily_rows_from_selected_source(symbol, start_date, end_date)
+        bars = self._selected_daily_rows_to_bars(symbol, daily_rows)
+        if normalized in {"1w", "weekly"}:
+            return self._daily_bars_to_weekly_bars(bars)
+        if normalized in {"1m", "monthly"}:
+            return self._daily_bars_to_monthly_bars(bars)
+        return bars
+
+    def _load_daily_rows_from_selected_source(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        if self.historical_data_source == "tencent":
+            return self.client.stock_zh_a_hist_tx(
+                symbol=self._akshare_daily_symbol(symbol),
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",
+                timeout=3,
+            )
+        return self.client.stock_zh_a_daily(
+            symbol=self._akshare_daily_symbol(symbol),
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq",
+        )
+
+    def _selected_daily_rows_to_bars(
+        self,
+        symbol: str,
+        rows: pd.DataFrame,
+    ) -> list[dict[str, Any]]:
+        if self.historical_data_source == "tencent":
+            return self._tencent_daily_rows_to_bars(rows)
+        return self._daily_rows_to_bars(symbol, rows)
+
     def _merge_realtime_bars(
         self,
         symbol: str,
         frequency: str,
         bars: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        if frequency.lower() in {"1d", "daily"}:
-            bars = self._merge_realtime_daily_bar(symbol, bars)
-        if frequency.lower() in {"1w", "weekly"}:
-            bars = self._merge_realtime_weekly_bar(symbol, bars)
+        try:
+            if frequency.lower() in {"1d", "daily"}:
+                bars = self._merge_realtime_daily_bar(symbol, bars)
+            if frequency.lower() in {"1w", "weekly"}:
+                bars = self._merge_realtime_weekly_bar(symbol, bars)
+        except Exception:
+            return bars
         return bars
 
     def search_stocks(self, query: str) -> list[dict[str, Any]]:
@@ -539,19 +589,14 @@ class AkshareAdapter:
             return value.isoformat()
         return value
 
-    def _stock_bid_ask(self, code: str) -> pd.DataFrame:
-        last_error = None
-        for attempt in range(self.quote_attempts):
-            try:
-                return self.client.stock_bid_ask_em(symbol=code)
-            except Exception as error:
-                last_error = error
-                if attempt + 1 < self.quote_attempts:
-                    time.sleep(0.2)
-        raise last_error
-
     def _xueqiu_quote(self, symbol: str) -> dict[str, Any]:
-        rows = self.client.stock_individual_spot_xq(symbol=self._xueqiu_symbol(symbol))
+        try:
+            rows = self.client.stock_individual_spot_xq(
+                symbol=self._xueqiu_symbol(symbol),
+                token=self.xueqiu_token or None,
+            )
+        except KeyError as error:
+            raise ConnectionError("雪球实时行情返回缺少 data 字段，可能是 token 无效或响应结构变更") from error
         return self._quote_from_xueqiu_rows(symbol, rows)
 
     def _quote_from_xueqiu_rows(self, fallback_symbol: str, rows: pd.DataFrame) -> dict[str, Any]:
@@ -652,7 +697,17 @@ class AkshareAdapter:
         return cleaned.removesuffix("m")
 
     def _is_intraday_frequency(self, frequency: str) -> bool:
-        return frequency.strip().lower() in {"1m", "5m", "15m", "30m", "60m", "1h"}
+        cleaned = frequency.strip()
+        return cleaned == "1m" or cleaned.lower() in {"5m", "15m", "30m", "60m", "1h"}
+
+    def _normalize_intraday_data_source(self, source: str) -> str:
+        return "eastmoney" if source.strip().lower() == "eastmoney" else "sina"
+
+    def _normalize_historical_data_source(self, source: str) -> str:
+        normalized = source.strip().lower()
+        if normalized in {"sina", "tencent"}:
+            return normalized
+        return "eastmoney"
 
     def _normalize_symbol(self, symbol: str) -> str:
         raw = symbol.strip().upper()
@@ -752,15 +807,37 @@ class AkshareAdapter:
             for _, row in rows.iterrows()
         ]
 
-    def _price_levels(self, values: dict[str, Any], side: str) -> list[dict[str, Any]]:
+    def _eastmoney_minute_rows_to_bars(self, rows: pd.DataFrame) -> list[dict[str, Any]]:
         return [
             {
-                "level": level,
-                "price": self._number(values.get(f"{side}_{level}", 0)),
-                "volume": self._number(values.get(f"{side}_{level}_vol", 0)),
+                "open_time": str(row.get("时间", "")),
+                "open": self._number(row.get("开盘", 0)),
+                "high": self._number(row.get("最高", 0)),
+                "low": self._number(row.get("最低", 0)),
+                "close": self._number(row.get("收盘", 0)),
+                "volume": self._number(row.get("成交量", 0)),
+                "turnover": self._number(row.get("成交额", 0)),
             }
-            for level in range(1, 6)
-            if self._number(values.get(f"{side}_{level}", 0)) > 0
+            for _, row in rows.iterrows()
+        ]
+
+    def _intraday_rows_to_bars(self, rows: pd.DataFrame) -> list[dict[str, Any]]:
+        if self.intraday_data_source == "eastmoney":
+            return self._eastmoney_minute_rows_to_bars(rows)
+        return self._sina_minute_rows_to_bars(rows)
+
+    def _tencent_daily_rows_to_bars(self, rows: pd.DataFrame) -> list[dict[str, Any]]:
+        return [
+            {
+                "open_time": self._date_string(row.get("date", "")),
+                "open": self._number(row.get("open", 0)),
+                "high": self._number(row.get("high", 0)),
+                "low": self._number(row.get("low", 0)),
+                "close": self._number(row.get("close", 0)),
+                "volume": self._number(row.get("amount", 0)),
+                "turnover": None,
+            }
+            for _, row in rows.iterrows()
         ]
 
     def _daily_bars_to_weekly_bars(self, bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -787,8 +864,47 @@ class AkshareAdapter:
             current["low"] = min(current["low"], bar["low"])
             current["close"] = bar["close"]
             current["volume"] += bar["volume"]
-            current["turnover"] += bar["turnover"]
+            current["turnover"] = self._sum_optional_numbers(
+                current.get("turnover"),
+                bar.get("turnover"),
+            )
         return [weekly[key] for key in sorted(weekly)]
+
+    def _daily_bars_to_monthly_bars(self, bars: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        monthly: dict[str, dict[str, Any]] = {}
+        for bar in bars:
+            try:
+                open_date = datetime.strptime(str(bar["open_time"]), "%Y-%m-%d")
+            except ValueError:
+                continue
+            month_start = open_date.replace(day=1).strftime("%Y-%m-%d")
+            current = monthly.get(month_start)
+            if current is None:
+                monthly[month_start] = {
+                    "open_time": month_start,
+                    "open": bar["open"],
+                    "high": bar["high"],
+                    "low": bar["low"],
+                    "close": bar["close"],
+                    "volume": bar["volume"],
+                    "turnover": bar["turnover"],
+                }
+                continue
+            current["high"] = max(current["high"], bar["high"])
+            current["low"] = min(current["low"], bar["low"])
+            current["close"] = bar["close"]
+            current["volume"] += bar["volume"]
+            current["turnover"] = self._sum_optional_numbers(
+                current.get("turnover"),
+                bar.get("turnover"),
+            )
+        return [monthly[key] for key in sorted(monthly)]
+
+    def _sum_optional_numbers(self, left: Any, right: Any) -> float | None:
+        values = [value for value in (left, right) if value is not None]
+        if not values:
+            return None
+        return sum(self._number(value) for value in values)
 
     def _merge_realtime_daily_bar(
         self,
@@ -846,6 +962,28 @@ class AkshareAdapter:
 
     def _realtime_quote_for_bar(self, symbol: str) -> dict[str, Any]:
         return self.current_quote(symbol)
+
+    def _filter_bars_by_date(
+        self,
+        bars: list[dict[str, Any]],
+        start_date: str | None,
+        end_date: str | None,
+    ) -> list[dict[str, Any]]:
+        if not start_date and not end_date:
+            return bars
+
+        start = (start_date or "")[:10]
+        end = (end_date or "")[:10]
+        filtered = []
+        for bar in bars:
+            open_time = self._date_string(bar.get("open_time", ""))
+            bar_date = open_time[:10]
+            if start and bar_date < start:
+                continue
+            if end and bar_date > end:
+                continue
+            filtered.append(bar)
+        return filtered
 
     def _number(self, value: Any) -> float:
         if pd.isna(value):

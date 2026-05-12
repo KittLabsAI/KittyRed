@@ -176,6 +176,7 @@ mod tests {
             .sync_runtime_secrets(RuntimeSecretsSyncDto {
                 persist: false,
                 model_api_key: Some("sk-test".into()),
+                xueqiu_token: None,
                 exchanges: Vec::new(),
             })
             .expect("model api key should be available for the scan");
@@ -680,8 +681,8 @@ mod tests {
 
 use std::time::Duration;
 
-use crate::jobs::{kinds, JobService};
 use crate::financial_reports::FinancialReportService;
+use crate::jobs::{kinds, JobService};
 use crate::market::MarketDataService;
 use crate::models::{RecommendationRunDto, RuntimeSettingsDto};
 use crate::notifications::NotificationService;

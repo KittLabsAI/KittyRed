@@ -20,6 +20,33 @@
 - 自选股行情后台刷新间隔是 60 秒；股票池后台预热间隔是 1 小时。
 - 自选股行情刷新失败时保留旧缓存，不清空页面，也不要返回会让页面误判为无数据的空结果。
 
+## 当前在用的数据接口
+
+- 个股实时行情：
+  - `current_quotes` / `market.refresh_tickers` 当前使用 `stock_individual_spot_xq`，来源是雪球单股实时 quote，用于刷新自选股缓存 `market_ticker_cache`。
+  - `current_quote` / 设置页“测试 AKShare 连接”当前也使用 `stock_individual_spot_xq`，来源是雪球单股实时 quote；拿不到时直接报错，不再回退到东方财富路径。
+- 分时数据：
+  - 当前只对用户开放这一类数据源选择。
+  - `stock_zh_a_minute`：新浪财经分钟线。
+  - `stock_zh_a_hist_min_em`：东方财富分钟线。
+  - `5m/15m/30m/60m/1h` 等盘中 K 线统一走这一组接口，具体来源由设置页“分时数据”决定。
+- 历史行情数据：
+  - 当前只对用户开放这一类数据源选择。
+  - `stock_zh_a_hist`：东方财富日/周/月线原生接口。
+  - `stock_zh_a_daily`：新浪财经日线接口；当历史来源选择新浪财经时，周线/月线由本地日线聚合生成。
+  - `stock_zh_a_hist_tx`：腾讯证券日线接口；当历史来源选择腾讯证券时，周线/月线由本地日线聚合生成。
+  - 当前市场图表、信号、推荐、回测等历史 K 线读取统一走这组接口，具体来源由设置页“历史行情数据”决定。
+- 财报数据：
+  - 当前不对用户开放数据源选择。
+  - 统一通过东方财富财报接口获取，包含 `stock_yjbb_em`、`stock_yjkb_em`、`stock_yjyg_em`、`stock_zcfz_em`、`stock_lrb_em`、`stock_xjll_em`。
+- 公司基础资料：
+  - 当前不对用户开放数据源选择。
+  - `stock_individual_basic_info_xq`：雪球公司基础资料接口。
+- 股票池搜索：
+  - `stock_info_a_code_name`：用于全量 A 股股票池同步和本地搜索预热，写入 SQLite `a_share_symbol_cache`。
+- 交易日历：
+  - `tool_trade_date_hist_sina`：新浪交易日历接口，用于交易日判断、回测时间点构建和交易日历判断。
+
 ## A 股范围和中文 UI
 
 - 产品只关注沪深 A 股和本地模拟交易。

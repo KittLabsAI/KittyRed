@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSettingsFormData, saveSettingsFormData, type SettingsFormData } from "./settings";
+import {
+  loadSettingsFormData,
+  saveSettingsFormData,
+  testAkshareConnectionItem,
+  type SettingsFormData,
+} from "./settings";
 
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(async () => undefined),
-  storeGet: vi.fn(async () => null),
+  invoke: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
+  storeGet: vi.fn(async (..._args: unknown[]) => null),
   storeSet: vi.fn(async () => undefined),
   storeSave: vi.fn(async () => undefined),
 }));
@@ -54,16 +59,34 @@ function buildSettings(): SettingsFormData {
     modelName: "gpt-5.5",
     modelBaseUrl: "",
     modelApiKey: "",
-    modelTemperature: 0,
-    modelMaxTokens: 4096,
-    modelMaxContext: 128000,
+    xueqiuToken: "",
+    intradayDataSource: "sina",
+    historicalDataSource: "eastmoney",
+    recommendationModel: {
+      temperature: 0.2,
+      maxTokens: 900,
+      maxContext: 16000,
+      effortLevel: "off" as const,
+    },
+    assistantModel: {
+      temperature: 0.7,
+      maxTokens: 16000,
+      maxContext: 128000,
+      effortLevel: "off" as const,
+    },
+    financialReportModel: {
+      temperature: 0.2,
+      maxTokens: 4096,
+      maxContext: 64000,
+      effortLevel: "off" as const,
+    },
     hasStoredModelApiKey: false,
+    hasStoredXueqiuToken: false,
     autoAnalyzeEnabled: true,
     autoAnalyzeFrequency: "10m",
     scanScope: "all_markets",
     watchlistSymbols: ["SHSE.600000"],
     dailyMaxAiCalls: 24,
-    useBidAskData: true,
     useFinancialReportData: true,
     aiKlineBarCount: 60,
     aiKlineFrequencies: ["5m", "1h", "1d", "1w"],
@@ -121,6 +144,8 @@ describe("saveSettingsFormData", () => {
       expect.objectContaining({
         settings: expect.objectContaining({
           minVolume24h: 25000000,
+          intradayDataSource: "sina",
+          historicalDataSource: "eastmoney",
           useFinancialReportData: true,
         }),
       }),
@@ -162,6 +187,52 @@ describe("saveSettingsFormData", () => {
     );
   });
 
+  it("persists the xueqiu token through the backend secret store without storing the plaintext in metadata", async () => {
+    await saveSettingsFormData(
+      {
+        ...buildSettings(),
+        xueqiuToken: "xq-token-test",
+      },
+      "",
+    );
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "sync_runtime_secrets",
+      {
+        payload: expect.objectContaining({
+          xueqiuToken: "xq-token-test",
+        }),
+      },
+    );
+    expect(mocks.storeSet).toHaveBeenCalledWith(
+      "settings",
+      expect.objectContaining({
+        hasStoredXueqiuToken: true,
+        xueqiuToken: "",
+      }),
+    );
+  });
+
+  it("keeps an existing stored xueqiu token when the write-only field stays blank", async () => {
+    await saveSettingsFormData(
+      {
+        ...buildSettings(),
+        hasStoredXueqiuToken: true,
+        xueqiuToken: "",
+      },
+      "",
+    );
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "sync_runtime_secrets",
+      {
+        payload: expect.objectContaining({
+          xueqiuToken: null,
+        }),
+      },
+    );
+  });
+
   it("keeps an existing stored model API key when the write-only field stays blank", async () => {
     await saveSettingsFormData(
       {
@@ -187,8 +258,89 @@ describe("saveSettingsFormData", () => {
 
     expect(loaded.modelPreset).toBe("Custom");
     expect(loaded.modelProvider).toBe("OpenAI-compatible");
-    expect(loaded.modelTemperature).toBe(0);
-    expect(loaded.modelMaxTokens).toBe(4096);
-    expect(loaded.modelMaxContext).toBe(128000);
+    expect(loaded.intradayDataSource).toBe("sina");
+    expect(loaded.historicalDataSource).toBe("eastmoney");
+    expect(loaded.recommendationModel).toEqual({
+      temperature: 0.2,
+      maxTokens: 900,
+      maxContext: 16000,
+      effortLevel: "off",
+    });
+    expect(loaded.assistantModel.temperature).toBe(0.7);
+    expect(loaded.financialReportModel.temperature).toBe(0.2);
+  });
+
+  it("loads stored model api key and xueqiu token back into the form from the backend", async () => {
+    mocks.storeGet.mockResolvedValueOnce(({
+      ...buildSettings(),
+      hasStoredModelApiKey: true,
+      hasStoredXueqiuToken: true,
+    } as unknown) as null);
+    mocks.invoke.mockImplementation((async (...args: unknown[]) => {
+      const command = String(args[0] ?? "");
+      if (command === "get_settings_snapshot") {
+        return {
+          exchange_credentials: [],
+        };
+      }
+      if (command === "get_settings_secrets") {
+        return {
+          modelApiKey: "sk-restored",
+          xueqiuToken: "xq-restored",
+        };
+      }
+      return undefined;
+    }) as (...args: unknown[]) => Promise<undefined>);
+
+    const loaded = await loadSettingsFormData();
+
+    expect(loaded.modelApiKey).toBe("sk-restored");
+    expect(loaded.xueqiuToken).toBe("xq-restored");
+  });
+
+  it("passes current AKShare source selections and xueqiu token overrides to the single-item test command", async () => {
+    mocks.invoke.mockImplementationOnce(async () => ({
+      itemId: "intraday",
+      ok: true,
+      message: "分时数据测试成功",
+    }));
+
+    await testAkshareConnectionItem("intraday", {
+      intradayDataSource: "eastmoney",
+      historicalDataSource: "tencent",
+      xueqiuToken: "xq-live-token",
+    });
+
+    expect(mocks.invoke).toHaveBeenCalledWith("test_akshare_connection_item", {
+      payload: {
+        itemId: "intraday",
+        intradayDataSource: "eastmoney",
+        historicalDataSource: "tencent",
+        xueqiuToken: "xq-live-token",
+      },
+    });
+  });
+
+  it("keeps using the stored xueqiu token when the in-page field stays blank", async () => {
+    mocks.invoke.mockImplementationOnce(async () => ({
+      itemId: "quote",
+      ok: true,
+      message: "个股实时行情测试成功",
+    }));
+
+    await testAkshareConnectionItem("quote", {
+      intradayDataSource: "sina",
+      historicalDataSource: "eastmoney",
+      xueqiuToken: "",
+    });
+
+    expect(mocks.invoke).toHaveBeenCalledWith("test_akshare_connection_item", {
+      payload: {
+        itemId: "quote",
+        intradayDataSource: "sina",
+        historicalDataSource: "eastmoney",
+        xueqiuToken: null,
+      },
+    });
   });
 });

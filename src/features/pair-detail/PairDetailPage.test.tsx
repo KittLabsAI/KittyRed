@@ -101,8 +101,20 @@ const mocks = vi.hoisted(() => ({
     },
   ]),
   listPaperAccounts: vi.fn(async () => [{ accountId: "paper-cash", exchange: "模拟账户", availableUsdt: 1_000_000 }]),
+  listenToMarketEvents: vi.fn(),
   triggerRecommendation: vi.fn(async () => []),
 }));
+
+let marketEventListener: ((event: { symbol: string; interval: string }) => void) | null = null;
+
+mocks.listenToMarketEvents.mockImplementation(async (callback: (event: { symbol: string; interval: string }) => void) => {
+  marketEventListener = callback;
+  return () => {
+    if (marketEventListener === callback) {
+      marketEventListener = null;
+    }
+  };
+});
 
 vi.mock("../../lib/tauri", () => ({
   createManualPaperOrder: mocks.createManualPaperOrder,
@@ -111,6 +123,7 @@ vi.mock("../../lib/tauri", () => ({
   getPairDetail: mocks.getPairDetail,
   listMarkets: mocks.listMarkets,
   listPaperAccounts: mocks.listPaperAccounts,
+  listenToMarketEvents: mocks.listenToMarketEvents,
   triggerRecommendation: mocks.triggerRecommendation,
 }));
 
@@ -142,11 +155,16 @@ function renderPageWithoutSymbol() {
   );
 }
 
+function emitMarketEvent(event: { symbol: string; interval: string }) {
+  marketEventListener?.(event);
+}
+
 describe("PairDetailPage", () => {
   const localStorageMap = new Map<string, string>();
 
   beforeEach(() => {
     vi.clearAllMocks();
+    marketEventListener = null;
     localStorageMap.clear();
     Object.defineProperty(window, "localStorage", {
       configurable: true,
@@ -225,6 +243,63 @@ describe("PairDetailPage", () => {
     expect(screen.queryByText("K 线涨跌")).not.toBeInTheDocument();
   });
 
+  it("keeps stock prices in cents for high-priced A shares", async () => {
+    mocks.getPairDetail.mockResolvedValueOnce({
+      symbol: "SZSE.300750",
+      marketType: "A 股",
+      thesis: "A 股行情来自 AKShare。",
+      coinInfo: {
+        name: "宁德时代",
+        symbol: "SZSE.300750",
+        summary: "深圳证券交易所 A 股。",
+        ecosystem: "深市 A 股",
+        listedExchanges: ["深圳证券交易所"],
+        riskTags: [],
+      },
+      venues: [
+        {
+          exchange: "akshare",
+          last: 218.3,
+          bid: 218.2,
+          ask: 218.4,
+          changePct: 1.23,
+          volume24h: 130000000,
+          updatedAt: "2026-05-03T19:00:00+08:00",
+        },
+      ],
+      orderbooks: [],
+      recentTrades: [],
+      spreads: [],
+    });
+    mocks.listMarkets.mockResolvedValueOnce([
+      {
+        symbol: "SZSE.300750",
+        baseAsset: "宁德时代",
+        marketType: "深市A股",
+        marketSizeTier: "large" as const,
+        last: 218.3,
+        change24h: 1.23,
+        volume24h: 123456789,
+        spreadBps: 0,
+        venues: ["akshare"],
+        updatedAt: "2026-05-07T10:30:00+08:00",
+      },
+    ]);
+
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/pair-detail?symbol=SZSE.300750"]}>
+          <Routes>
+            <Route element={<PairDetailPage />} path="/pair-detail" />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("宁德时代")).toBeInTheDocument();
+    expect(screen.getAllByText("¥218.30").length).toBeGreaterThan(0);
+  });
+
   it("requests candles for the selected interval", async () => {
     const user = userEvent.setup();
     renderPage();
@@ -233,6 +308,19 @@ describe("PairDetailPage", () => {
 
     await waitFor(() => {
       expect(mocks.getPairCandles).toHaveBeenCalledWith("SHSE.600000", "ashare", "1H", "akshare");
+    });
+  });
+
+  it("refreshes visible candles when the cache update event arrives", async () => {
+    renderPage();
+
+    await screen.findByText("浦发银行");
+    expect(mocks.getPairCandles).toHaveBeenCalledTimes(1);
+
+    emitMarketEvent({ symbol: "SHSE.600000", interval: "1D" });
+
+    await waitFor(() => {
+      expect(mocks.getPairCandles).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -76,8 +76,8 @@ describe("CandlestickChart", () => {
         { close: 68430, high: 68490, low: 68410, open: 68450, time: 1714734060 },
       ]);
       expect(histogramSetData).toHaveBeenCalledWith([
-        { color: "rgba(16, 185, 129, 0.28)", time: 1714734000, value: 820 },
-        { color: "rgba(249, 115, 22, 0.28)", time: 1714734060, value: 740 },
+        { color: "rgba(255, 107, 107, 0.28)", time: 1714734000, value: 820 },
+        { color: "rgba(56, 211, 159, 0.28)", time: 1714734060, value: 740 },
       ]);
       expect(fitContent).toHaveBeenCalledTimes(1);
     });

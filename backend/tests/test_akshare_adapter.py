@@ -1,6 +1,8 @@
 import unittest
 from datetime import datetime
 import time
+import threading
+from unittest.mock import Mock
 
 import pandas as pd
 
@@ -10,8 +12,9 @@ from backend.akshare_service import handle_request
 
 class FakeAkshareClient:
     def __init__(self, failures_before_success=0):
-        self.bid_ask_calls = []
         self.xq_calls = []
+        self.xq_tokens = []
+        self.basic_info_tokens = []
         self.xq_failures = set()
         self.failures_before_success = failures_before_success
         self.hist_failures_before_success = 0
@@ -21,8 +24,9 @@ class FakeAkshareClient:
         self.financial_calls = []
         self.financial_failures = set()
 
-    def stock_individual_spot_xq(self, symbol):
+    def stock_individual_spot_xq(self, symbol, token=None):
         self.xq_calls.append(symbol)
+        self.xq_tokens.append(token)
         if symbol in self.xq_failures:
             raise ConnectionError("xueqiu disconnected")
         fixtures = {
@@ -56,30 +60,35 @@ class FakeAkshareClient:
             [{"item": item, "value": value} for item, value in values.items()]
         )
 
-    def stock_individual_basic_info_xq(self, symbol):
+
+class SlowXueqiuClient(FakeAkshareClient):
+    def __init__(self, sleep_seconds=0.05):
+        super().__init__()
+        self.sleep_seconds = sleep_seconds
+        self.active_calls = 0
+        self.max_concurrent_calls = 0
+        self.lock = threading.Lock()
+
+    def stock_individual_spot_xq(self, symbol, token=None):
+        with self.lock:
+            self.active_calls += 1
+            self.max_concurrent_calls = max(self.max_concurrent_calls, self.active_calls)
+        try:
+            time.sleep(self.sleep_seconds)
+            return super().stock_individual_spot_xq(symbol, token=token)
+        finally:
+            with self.lock:
+                self.active_calls -= 1
+
+    def stock_individual_basic_info_xq(self, symbol, token=None):
         self.basic_info_call = symbol
+        self.basic_info_tokens.append(token)
         return pd.DataFrame(
             [
                 {"item": "org_name_cn", "value": "上海浦东发展银行股份有限公司"},
                 {"item": "main_operation_business", "value": "商业银行业务"},
                 {"item": "industry", "value": "银行"},
                 {"item": "listed_date", "value": "1999-11-10"},
-            ]
-        )
-
-    def stock_bid_ask_em(self, symbol):
-        self.bid_ask_calls.append(symbol)
-        if self.failures_before_success:
-            self.failures_before_success -= 1
-            raise ConnectionError("remote disconnected")
-        return pd.DataFrame(
-            [
-                {"item": "最新", "value": 8.72},
-                {"item": "今开", "value": 8.70},
-                {"item": "最高", "value": 8.80},
-                {"item": "最低", "value": 8.60},
-                {"item": "总手", "value": 1000},
-                {"item": "金额", "value": 872000},
             ]
         )
 
@@ -111,6 +120,51 @@ class FakeAkshareClient:
                     "成交量": 12000,
                     "成交额": 10464000,
                 }
+            ]
+        )
+
+    def stock_zh_a_hist_tx(self, symbol, start_date, end_date, adjust, timeout=None):
+        self.hist_tx_call = {
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date,
+            "adjust": adjust,
+            "timeout": timeout,
+        }
+        return pd.DataFrame(
+            [
+                {
+                    "date": "2026-04-29",
+                    "open": 8.4,
+                    "close": 8.6,
+                    "high": 8.7,
+                    "low": 8.3,
+                    "amount": 500000.0,
+                },
+                {
+                    "date": "2026-04-30",
+                    "open": 8.6,
+                    "close": 8.8,
+                    "high": 8.9,
+                    "low": 8.5,
+                    "amount": 600000.0,
+                },
+                {
+                    "date": "2026-05-06",
+                    "open": 8.9,
+                    "close": 9.1,
+                    "high": 9.2,
+                    "low": 8.8,
+                    "amount": 700000.0,
+                },
+                {
+                    "date": "2026-05-07",
+                    "open": 9.1,
+                    "close": 9.2,
+                    "high": 9.3,
+                    "low": 9.0,
+                    "amount": 800000.0,
+                },
             ]
         )
 
@@ -174,8 +228,13 @@ class FakeAkshareClient:
             ]
         )
 
-    def stock_zh_a_daily(self, symbol, adjust):
-        self.daily_call = {"symbol": symbol, "adjust": adjust}
+    def stock_zh_a_daily(self, symbol, adjust, start_date=None, end_date=None):
+        self.daily_call = {
+            "symbol": symbol,
+            "adjust": adjust,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
         return pd.DataFrame(
             [
                 {
@@ -292,6 +351,17 @@ class SlowKlineClient(FakeAkshareClient):
 
 
 class AkshareAdapterTest(unittest.TestCase):
+    def test_xueqiu_token_is_forwarded_to_all_xueqiu_endpoints(self):
+        client = FakeAkshareClient()
+        adapter = AkshareAdapter(client, xueqiu_token="xq-token-test")
+
+        adapter.current_quote("SHSE.600000")
+        adapter.current_quotes(["SHSE.600000", "SZSE.000001"])
+        adapter.stock_info("SHSE.600000")
+
+        self.assertEqual(client.xq_tokens, ["xq-token-test", "xq-token-test", "xq-token-test"])
+        self.assertEqual(client.basic_info_tokens, ["xq-token-test"])
+
     def test_current_quote_reads_xueqiu_realtime_snapshot(self):
         client = FakeAkshareClient()
         adapter = AkshareAdapter(client)
@@ -299,7 +369,6 @@ class AkshareAdapterTest(unittest.TestCase):
         quote = adapter.current_quote("SHSE.600000")
 
         self.assertEqual(client.xq_calls, ["SH600000"])
-        self.assertEqual(client.bid_ask_calls, [])
         self.assertEqual(
             quote,
             {
@@ -341,17 +410,6 @@ class AkshareAdapterTest(unittest.TestCase):
             info["items"]["org_name_cn"],
             "上海浦东发展银行股份有限公司",
         )
-
-    def test_bid_ask_uses_eastmoney_quote_depth(self):
-        client = FakeAkshareClient()
-        adapter = AkshareAdapter(client)
-
-        quote = adapter.bid_ask("SHSE.600000")
-
-        self.assertEqual(client.bid_ask_calls, ["600000"])
-        self.assertEqual(quote["stock_code"], "SHSE.600000")
-        self.assertEqual(quote["last_price"], 8.72)
-        self.assertEqual(quote["ask_levels"], [])
 
     def test_multi_frequency_bars_returns_assistant_kline_set(self):
         client = FakeAkshareClient()
@@ -397,31 +455,51 @@ class AkshareAdapterTest(unittest.TestCase):
         self.assertEqual([quote["symbol"] for quote in quotes], ["SHSE.600000"])
         self.assertEqual(client.xq_calls, ["SH600000", "SZ000001"])
 
+    def test_current_quotes_fetches_xueqiu_quotes_in_parallel_with_limit_ten(self):
+        client = SlowXueqiuClient(sleep_seconds=0.05)
+        adapter = AkshareAdapter(client)
+        symbols = ["SHSE.600000"] * 6 + ["SZSE.000001"] * 6
+
+        start = time.perf_counter()
+        quotes = adapter.current_quotes(symbols)
+        elapsed = time.perf_counter() - start
+
+        self.assertEqual(len(quotes), 12)
+        self.assertLess(elapsed, 0.25)
+        self.assertGreaterEqual(client.max_concurrent_calls, 2)
+        self.assertLessEqual(client.max_concurrent_calls, 10)
+
     def test_is_trade_date_uses_akshare_calendar(self):
         adapter = AkshareAdapter(FakeAkshareClient())
 
         self.assertTrue(adapter.is_trade_date("2026-05-07"))
         self.assertFalse(adapter.is_trade_date("2026-05-08"))
 
-    def test_current_quote_retries_once_when_akshare_disconnects(self):
+    def test_current_quote_raises_when_xueqiu_realtime_snapshot_fails(self):
         client = FakeAkshareClient(failures_before_success=1)
-        client.xq_failures.add("SH600000")
         adapter = AkshareAdapter(client)
+        client.xq_failures.add("SH600000")
 
-        quote = adapter.current_quote("SHSE.600000")
-
-        self.assertEqual(client.bid_ask_calls, ["600000", "600000"])
-        self.assertEqual(quote["last"], 8.72)
+        with self.assertRaises(ConnectionError):
+            adapter.current_quote("SHSE.600000")
 
     def test_current_quote_does_not_use_daily_history_when_realtime_disconnects(self):
         client = FakeAkshareClient(failures_before_success=2)
-        client.xq_failures.add("SH600000")
         adapter = AkshareAdapter(client)
+        client.xq_failures.add("SH600000")
 
         with self.assertRaises(ConnectionError):
             adapter.current_quote("SHSE.600000")
 
         self.assertFalse(hasattr(client, "daily_call"))
+
+    def test_current_quote_reports_missing_xueqiu_data_field_as_connection_error(self):
+        client = Mock()
+        client.stock_individual_spot_xq.side_effect = KeyError("data")
+        adapter = AkshareAdapter(client)
+
+        with self.assertRaisesRegex(ConnectionError, "缺少 data 字段"):
+            adapter.current_quote("SHSE.600000")
 
     def test_history_bars_uses_akshare_daily_history(self):
         client = FakeAkshareClient()
@@ -470,6 +548,142 @@ class AkshareAdapterTest(unittest.TestCase):
         self.assertEqual(bars[0]["open_time"], "2026-05-07 11:30:00")
         self.assertEqual(bars[0]["close"], 9.15)
 
+    def test_handle_request_routes_intraday_history_to_eastmoney_when_configured(self):
+        client = FakeAkshareClient()
+
+        response = handle_request(
+            {
+                "action": "history_bars",
+                "symbol": "SHSE.600000",
+                "frequency": "60m",
+                "count": 40,
+                "intraday_data_source": "eastmoney",
+            },
+            adapter=AkshareAdapter(client, now=lambda: datetime(2026, 5, 6, 10, 10)),
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(client.hist_min_call["symbol"], "600000")
+        self.assertEqual(client.hist_min_call["period"], "60")
+        self.assertEqual(client.sina_minute_calls, [])
+
+    def test_handle_request_routes_historical_daily_to_tencent_when_configured(self):
+        client = FakeAkshareClient()
+
+        response = handle_request(
+            {
+                "action": "history_bars",
+                "symbol": "SHSE.600000",
+                "frequency": "1d",
+                "count": 120,
+                "historical_data_source": "tencent",
+            },
+            adapter=AkshareAdapter(client, now=lambda: datetime(2026, 5, 6)),
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            client.hist_tx_call,
+            {
+                "symbol": "sh600000",
+                "start_date": "20251107",
+                "end_date": "20260506",
+                "adjust": "qfq",
+                "timeout": 3,
+            },
+        )
+        self.assertFalse(hasattr(client, "hist_call"))
+
+    def test_handle_request_aggregates_weekly_history_from_tencent_daily_bars(self):
+        client = FakeAkshareClient()
+
+        response = handle_request(
+            {
+                "action": "history_bars",
+                "symbol": "SHSE.600000",
+                "frequency": "1w",
+                "count": 80,
+                "historical_data_source": "tencent",
+            },
+            adapter=AkshareAdapter(client, now=lambda: datetime(2026, 5, 7, 10, 10)),
+        )
+
+        self.assertTrue(response["ok"])
+        bars = response["data"]
+        self.assertEqual([bar["open_time"] for bar in bars], ["2026-04-27", "2026-05-04"])
+        self.assertEqual(bars[0]["open"], 8.4)
+        self.assertEqual(bars[0]["close"], 8.8)
+        self.assertEqual(bars[1]["high"], 9.3)
+
+    def test_handle_request_aggregates_monthly_history_from_tencent_daily_bars(self):
+        client = FakeAkshareClient()
+
+        response = handle_request(
+            {
+                "action": "history_bars",
+                "symbol": "SHSE.600000",
+                "frequency": "1M",
+                "count": 24,
+                "historical_data_source": "tencent",
+            },
+            adapter=AkshareAdapter(client, now=lambda: datetime(2026, 5, 7, 10, 10)),
+        )
+
+        self.assertTrue(response["ok"])
+        bars = response["data"]
+        self.assertEqual([bar["open_time"] for bar in bars], ["2026-04-01", "2026-05-01"])
+        self.assertEqual(bars[0]["open"], 8.4)
+        self.assertEqual(bars[0]["close"], 8.8)
+        self.assertEqual(bars[1]["close"], 9.2)
+
+    def test_history_bars_filters_intraday_rows_by_requested_date_range(self):
+        client = FakeAkshareClient()
+        adapter = AkshareAdapter(client, now=lambda: datetime(2026, 5, 11, 10, 10))
+        client.stock_zh_a_minute = lambda symbol, period, adjust: pd.DataFrame(
+            [
+                {
+                    "day": "2026-04-01 09:30:00",
+                    "open": "8.100",
+                    "high": "8.200",
+                    "low": "8.000",
+                    "close": "8.150",
+                    "volume": "100",
+                    "amount": "815",
+                },
+                {
+                    "day": "2026-04-30 15:00:00",
+                    "open": "8.500",
+                    "high": "8.600",
+                    "low": "8.400",
+                    "close": "8.550",
+                    "volume": "100",
+                    "amount": "855",
+                },
+                {
+                    "day": "2026-05-06 09:30:00",
+                    "open": "8.900",
+                    "high": "9.000",
+                    "low": "8.800",
+                    "close": "8.950",
+                    "volume": "100",
+                    "amount": "895",
+                },
+            ]
+        )
+
+        bars = adapter.history_bars(
+            "SHSE.600000",
+            "5m",
+            900,
+            start_date="2026-04-01",
+            end_date="2026-04-30",
+        )
+
+        self.assertEqual(
+            [bar["open_time"] for bar in bars],
+            ["2026-04-01 09:30:00", "2026-04-30 15:00:00"],
+        )
+
     def test_history_bars_retries_sina_minute_history_once(self):
         client = FakeAkshareClient()
         client.minute_failures_before_success = 1
@@ -507,7 +721,8 @@ class AkshareAdapterTest(unittest.TestCase):
 
         bars = adapter.history_bars("SHSE.600000", "1d", 120)
 
-        self.assertEqual(client.daily_call, {"symbol": "sh600000", "adjust": ""})
+        self.assertEqual(client.daily_call["symbol"], "sh600000")
+        self.assertEqual(client.daily_call["adjust"], "qfq")
         self.assertEqual(bars[-1]["open_time"], "2026-05-07")
         self.assertEqual(bars[-1]["close"], 9.16)
 
@@ -518,7 +733,8 @@ class AkshareAdapterTest(unittest.TestCase):
 
         bars = adapter.history_bars("SHSE.600000", "1w", 80)
 
-        self.assertEqual(client.daily_call, {"symbol": "sh600000", "adjust": ""})
+        self.assertEqual(client.daily_call["symbol"], "sh600000")
+        self.assertEqual(client.daily_call["adjust"], "qfq")
         self.assertEqual(bars[-1]["open_time"], "2026-05-04")
         self.assertEqual(bars[-1]["close"], 9.16)
 
@@ -533,9 +749,10 @@ class AkshareAdapterTest(unittest.TestCase):
         )
 
     def test_handle_request_returns_akshare_quote(self):
+        adapter = AkshareAdapter(FakeAkshareClient())
         response = handle_request(
             {"action": "current_quote", "symbol": "SZSE.000001"},
-            adapter=AkshareAdapter(FakeAkshareClient()),
+            adapter=adapter,
         )
 
         self.assertEqual(response["ok"], True)
@@ -615,6 +832,20 @@ class AkshareAdapterTest(unittest.TestCase):
         self.assertEqual(response["ok"], True)
         self.assertEqual(response["data"]["stock_code"], "ALL")
         self.assertEqual(len(response["data"]["sections"]), 6)
+
+    def test_handle_request_returns_financial_report_probe_from_stock_yjkb(self):
+        client = SlowXueqiuClient()
+
+        response = handle_request(
+            {"action": "financial_report_probe"},
+            adapter=AkshareAdapter(client, now=lambda: datetime(2026, 5, 8)),
+        )
+
+        self.assertEqual(response["ok"], True)
+        self.assertEqual(response["data"]["endpoint"], "stock_yjkb_em")
+        self.assertEqual(response["data"]["source"], "akshare:stock_yjkb_em")
+        self.assertTrue(response["data"]["row_count"] > 0)
+        self.assertEqual(client.financial_calls, [("stock_yjkb_em", "20260331")])
 
 
 if __name__ == "__main__":

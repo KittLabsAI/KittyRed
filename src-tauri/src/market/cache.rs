@@ -84,6 +84,33 @@ mod tests {
         assert_eq!(candles[0].open_time, "2026-05-07 11:30:00");
         assert_eq!(candles[0].close, 9.15);
     }
+
+    #[test]
+    fn clears_cached_candles_for_all_symbols_and_intervals() {
+        let cache = SqliteMarketTickerCache::in_memory().unwrap();
+        cache
+            .upsert_candles(
+                "SHSE.600000",
+                "60m",
+                &[OhlcvBar {
+                    open_time: "2026-05-07 11:30:00".into(),
+                    open: 9.15,
+                    high: 9.16,
+                    low: 9.15,
+                    close: 9.15,
+                    volume: 167_100.0,
+                    turnover: Some(1_530_125.991),
+                }],
+            )
+            .unwrap();
+
+        cache.clear_candles().unwrap();
+
+        assert!(cache
+            .list_candles("SHSE.600000", "60m", 120)
+            .unwrap()
+            .is_empty());
+    }
 }
 
 impl SqliteMarketTickerCache {
@@ -339,6 +366,13 @@ impl SqliteMarketTickerCache {
                 })
             })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn clear_candles(&self) -> anyhow::Result<()> {
+        self.db
+            .connection()
+            .execute("DELETE FROM market_candle_cache", [])?;
+        Ok(())
     }
 
     pub fn upsert_asset_metadata(&self, rows: &[AssetMetadataRecord]) -> anyhow::Result<()> {
