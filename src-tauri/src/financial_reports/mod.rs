@@ -26,6 +26,7 @@ use crate::models::{
 };
 use crate::recommendations::llm;
 use crate::settings::SettingsService;
+use crate::watchlist_selection::normalize_selected_watchlist;
 
 const TOTAL_SECTIONS: u32 = 6;
 const ALL_STOCKS_KEY: &str = "ALL";
@@ -428,7 +429,8 @@ impl FinancialReportService {
         stock_code: &str,
         settings_service: &SettingsService,
     ) -> anyhow::Result<FinancialReportAnalysisDto> {
-        let system_prompt = financial_analysis_system_prompt();
+        let runtime = settings_service.get_runtime_settings();
+        let system_prompt = runtime.financial_report_system_prompt.trim().to_string();
         let user_prompt = {
             let snapshot = self.snapshot(stock_code)?;
             if snapshot
@@ -464,7 +466,12 @@ impl FinancialReportService {
             self.update_analysis_item(&snapshot.stock_code, "running", attempt as u32, None);
             let content = match tokio::time::timeout(
                 Duration::from_secs(ANALYSIS_TIMEOUT_SECS),
-                llm::complete_text(settings_service, &model_settings, system_prompt, user_prompt),
+                llm::complete_text(
+                    settings_service,
+                    &model_settings,
+                    system_prompt,
+                    user_prompt,
+                ),
             )
             .await
             {
@@ -541,10 +548,12 @@ impl FinancialReportService {
     pub async fn analyze_watchlist_reports(
         &self,
         settings_service: &SettingsService,
+        selected_symbols: &[String],
     ) -> anyhow::Result<(usize, Vec<(String, String)>)> {
-        let watchlist = settings_service.get_runtime_settings().watchlist_symbols;
+        let runtime = settings_service.get_runtime_settings();
+        let watchlist = normalize_selected_watchlist(selected_symbols, &runtime.watchlist_symbols);
         if watchlist.is_empty() {
-            bail!("自选股票池为空，无法进行财报 AI 分析");
+            bail!("未选择可分析的自选股，无法进行财报 AI 分析");
         }
         self.initialize_analysis_progress(&watchlist);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(5));

@@ -1,8 +1,4 @@
-use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
-
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -254,7 +250,6 @@ pub fn fetch_stock_info_with_overrides(
     Ok(parsed.data.unwrap_or_else(|| json!({})))
 }
 
-
 pub fn fetch_multi_frequency_bars(symbol: &str, count: usize) -> anyhow::Result<serde_json::Value> {
     let settings = SettingsService::default();
     fetch_multi_frequency_bars_with_settings(&settings, symbol, count)
@@ -330,7 +325,9 @@ pub fn fetch_financial_report_probe_with_overrides(
     )?;
     let parsed: AkshareResponse<serde_json::Value> = serde_json::from_value(response)?;
     if !parsed.ok {
-        bail!(parsed.error.unwrap_or_else(|| "AKShare 财报请求失败".into()));
+        bail!(parsed
+            .error
+            .unwrap_or_else(|| "AKShare 财报请求失败".into()));
     }
     Ok(parsed.data.unwrap_or_else(|| json!({})))
 }
@@ -437,29 +434,8 @@ fn call_python_with_settings(
     settings: &SettingsService,
     overrides: &AkshareRequestOverrides,
 ) -> anyhow::Result<serde_json::Value> {
-    let python = std::env::var("PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| anyhow!("failed to resolve project root"))?;
     let request = request_with_runtime_overrides(request, settings, overrides)?;
-    let mut child = Command::new(python)
-        .arg("-m")
-        .arg("backend.akshare_service")
-        .current_dir(project_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(request.to_string().as_bytes())?;
-    }
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        bail!(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-    Ok(serde_json::from_slice(&output.stdout)?)
+    crate::python::invoke_python_module("backend.akshare_service", &request)
 }
 
 fn request_with_runtime_settings(

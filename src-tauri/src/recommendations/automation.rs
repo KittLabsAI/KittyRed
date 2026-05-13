@@ -61,6 +61,7 @@ mod tests {
             &settings,
             None,
             None,
+            None,
             &mut last_run_ms,
             600_000,
         )
@@ -135,6 +136,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             "auto",
         )
         .await
@@ -197,6 +199,7 @@ mod tests {
             &notifications,
             &paper,
             &settings,
+            None,
             None,
             None,
             None,
@@ -270,6 +273,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             "auto",
         )
         .await
@@ -338,6 +342,7 @@ mod tests {
             &notifications,
             &paper,
             &settings,
+            None,
             None,
             None,
             None,
@@ -414,6 +419,7 @@ mod tests {
             &notifications,
             &paper,
             &settings,
+            None,
             None,
             None,
             None,
@@ -691,7 +697,9 @@ use crate::recommendations::llm;
 use crate::recommendations::{
     default_risk_result_json, RecommendationRecord, RecommendationService,
 };
+use crate::sentiment::SentimentAnalysisService;
 use crate::settings::SettingsService;
+use crate::watchlist_selection::normalize_selected_watchlist;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, Time};
 
@@ -705,6 +713,7 @@ pub fn spawn_auto_analyze_worker(
     notification_service: NotificationService,
     paper_service: PaperService,
     financial_report_service: FinancialReportService,
+    sentiment_analysis_service: SentimentAnalysisService,
     app_handle: tauri::AppHandle,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -720,6 +729,7 @@ pub fn spawn_auto_analyze_worker(
                 &paper_service,
                 &settings_service,
                 Some(&financial_report_service),
+                Some(&sentiment_analysis_service),
                 Some(&app_handle),
                 &mut last_run_ms,
                 now_ms,
@@ -747,6 +757,7 @@ pub async fn run_auto_analyze_cycle(
     paper_service: &PaperService,
     settings_service: &SettingsService,
     financial_report_service: Option<&FinancialReportService>,
+    sentiment_analysis_service: Option<&SentimentAnalysisService>,
     app_handle: Option<&tauri::AppHandle>,
     last_run_ms: &mut Option<i64>,
     now_ms: i64,
@@ -774,6 +785,7 @@ pub async fn run_auto_analyze_cycle(
         paper_service,
         settings_service,
         financial_report_service,
+        sentiment_analysis_service,
         None,
         app_handle,
         "auto",
@@ -790,6 +802,7 @@ pub async fn execute_recommendation_job(
     paper_service: &PaperService,
     settings_service: &SettingsService,
     financial_report_service: Option<&FinancialReportService>,
+    sentiment_analysis_service: Option<&SentimentAnalysisService>,
     symbol: Option<String>,
     app_handle: Option<&tauri::AppHandle>,
     trigger_source: &str,
@@ -911,6 +924,7 @@ pub async fn execute_recommendation_job(
             .collect::<Vec<_>>();
         let financial_analyses =
             financial_analysis_contexts(financial_report_service, &runtime, &rows);
+        let sentiment_analyses = sentiment_analysis_contexts(sentiment_analysis_service, &rows);
         match llm::generate_trade_plan(
             settings_service,
             market_data_service,
@@ -921,6 +935,7 @@ pub async fn execute_recommendation_job(
             &enabled_exchanges,
             &position_contexts,
             &financial_analyses,
+            &sentiment_analyses,
         )
         .await
         {
@@ -1026,15 +1041,20 @@ pub async fn execute_recommendation_generation(
     paper_service: &PaperService,
     settings_service: &SettingsService,
     financial_report_service: Option<&FinancialReportService>,
+    sentiment_analysis_service: Option<&SentimentAnalysisService>,
     app_handle: Option<&tauri::AppHandle>,
+    selected_symbols: Option<Vec<String>>,
 ) -> anyhow::Result<Vec<RecommendationRunDto>> {
     let runtime = settings_service.get_runtime_settings();
     let enabled_exchanges: Vec<String> = Vec::new();
     let risk_equity_usdt = recommendation_risk_equity_usdt(&runtime, paper_service);
-    let rows = market_data_service.cached_market_rows_for_watchlist(&runtime.watchlist_symbols);
-    recommendation_service.initialize_generation_progress(&runtime.watchlist_symbols, &rows);
+    let scoped_watchlist = selected_symbols
+        .map(|symbols| normalize_selected_watchlist(&symbols, &runtime.watchlist_symbols))
+        .unwrap_or_else(|| runtime.watchlist_symbols.clone());
+    let rows = market_data_service.cached_market_rows_for_watchlist(&scoped_watchlist);
+    recommendation_service.initialize_generation_progress(&scoped_watchlist, &rows);
 
-    if runtime.watchlist_symbols.is_empty() {
+    if scoped_watchlist.is_empty() {
         recommendation_service.fail_generation_progress("自选股票池为空，无法生成 AI 建议".into());
         return Err(anyhow::anyhow!("自选股票池为空，无法生成 AI 建议"));
     }
@@ -1083,6 +1103,7 @@ pub async fn execute_recommendation_generation(
             .collect::<Vec<_>>();
         let financial_analyses =
             financial_analysis_contexts(financial_report_service, &runtime, &rows);
+        let sentiment_analyses = sentiment_analysis_contexts(sentiment_analysis_service, &rows);
         match llm::generate_trade_plan(
             settings_service,
             market_data_service,
@@ -1093,6 +1114,7 @@ pub async fn execute_recommendation_generation(
             &enabled_exchanges,
             &position_contexts,
             &financial_analyses,
+            &sentiment_analyses,
         )
         .await
         {
@@ -1442,6 +1464,21 @@ fn financial_analysis_contexts(
     rows.iter()
         .filter_map(|row| {
             let analysis = service.shared_ai_financial_context(&row.symbol).ok()??;
+            Some((row.symbol.clone(), analysis))
+        })
+        .collect()
+}
+
+fn sentiment_analysis_contexts(
+    sentiment_analysis_service: Option<&SentimentAnalysisService>,
+    rows: &[crate::models::MarketListRow],
+) -> std::collections::HashMap<String, crate::models::AiSentimentAnalysisContextDto> {
+    let Some(service) = sentiment_analysis_service else {
+        return std::collections::HashMap::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let analysis = service.shared_ai_sentiment_context(&row.symbol).ok()??;
             Some((row.symbol.clone(), analysis))
         })
         .collect()

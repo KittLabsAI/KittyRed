@@ -15,3 +15,4 @@ pub const NOTIFICATION_DISPATCH: &str = "notification_dispatch";
 pub const SIGNAL_SCAN: &str = "signal_scan";
 pub const FINANCIAL_REPORT_FETCH: &str = "financial_report.fetch";
 pub const FINANCIAL_REPORT_ANALYZE: &str = "financial_report.analyze";
+pub const SENTIMENT_ANALYZE: &str = "sentiment.analyze";

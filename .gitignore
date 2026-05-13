@@ -29,6 +29,7 @@ docs/
 # Tauri / Rust generated files
 src-tauri/target
 src-tauri/gen/schemas
+src-tauri/resources/
 
 # Editor directories and files
 .vscode/*

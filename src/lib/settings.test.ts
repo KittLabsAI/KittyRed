@@ -80,6 +80,16 @@ function buildSettings(): SettingsFormData {
       maxContext: 64000,
       effortLevel: "off" as const,
     },
+    sentimentAnalysisModel: {
+      temperature: 0.2,
+      maxTokens: 4096,
+      maxContext: 64000,
+      effortLevel: "off" as const,
+    },
+    sentimentPlatformPriority: ["xueqiu", "zhihu", "weibo", "baidu"],
+    sentimentFetchRecentDays: 21,
+    sentimentItemMaxChars: 800,
+    sentimentSamplingOrder: "time_first",
     hasStoredModelApiKey: false,
     hasStoredXueqiuToken: false,
     autoAnalyzeEnabled: true,
@@ -106,6 +116,8 @@ function buildSettings(): SettingsFormData {
     promptExtension: "",
     assistantSystemPrompt: "Assistant 系统提示词",
     recommendationSystemPrompt: "AI 推荐系统提示词",
+    financialReportSystemPrompt: "AI 财报分析系统提示词",
+    sentimentAnalysisSystemPrompt: "AI 舆情分析系统提示词",
     accountMode: "paper",
     autoPaperExecution: false,
     notifications: {
@@ -147,6 +159,12 @@ describe("saveSettingsFormData", () => {
           intradayDataSource: "sina",
           historicalDataSource: "eastmoney",
           useFinancialReportData: true,
+          sentimentPlatformPriority: ["xueqiu", "zhihu", "weibo", "baidu"],
+          sentimentFetchRecentDays: 21,
+          sentimentItemMaxChars: 800,
+          sentimentSamplingOrder: "time_first",
+          financialReportSystemPrompt: "AI 财报分析系统提示词",
+          sentimentAnalysisSystemPrompt: "AI 舆情分析系统提示词",
         }),
       }),
     );
@@ -268,6 +286,42 @@ describe("saveSettingsFormData", () => {
     });
     expect(loaded.assistantModel.temperature).toBe(0.7);
     expect(loaded.financialReportModel.temperature).toBe(0.2);
+    expect(loaded.financialReportSystemPrompt).toContain("财报分析助手");
+    expect(loaded.financialReportSystemPrompt).toContain("输出示例");
+    expect(loaded.financialReportSystemPrompt).toContain("\"收入质量\":7");
+    expect(loaded.sentimentAnalysisSystemPrompt).toContain("舆情分析助手");
+    expect(loaded.sentimentAnalysisSystemPrompt).toContain("输出示例");
+    expect(loaded.sentimentAnalysisSystemPrompt).toContain("\"情感倾向\":{\"score\":62");
+    expect(loaded.sentimentPlatformPriority).toEqual([
+      "xueqiu",
+      "zhihu",
+      "weibo",
+      "xiaohongshu",
+      "douyin",
+      "bilibili",
+      "wechat",
+      "baidu",
+      "toutiao",
+    ]);
+    expect(loaded.sentimentFetchRecentDays).toBe(30);
+    expect(loaded.sentimentItemMaxChars).toBe(420);
+    expect(loaded.sentimentSamplingOrder).toBe("time_first");
+  });
+
+  it("upgrades previously saved short analysis prompt defaults to the full prompts with examples", async () => {
+    mocks.storeGet.mockResolvedValueOnce(({
+      financialReportSystemPrompt:
+        "你是 KittyRed 的沪深 A 股财报分析助手。只输出一个 JSON 对象，不要 Markdown、代码块或任何前后缀。前十个字段是整数评分，后四个字段是文本分析。字段名必须完全一致：收入质量、毛利水平、净利与回报、盈利调节、偿债能力、现金流状况、业绩增速、研发及资本投入、营运效率、资产质量、关键信息总结、财报正向因素、财报负向因素、财报造假嫌疑点。分数字段上限依次为 8、10、12、5、15、15、12、8、10、5。分数越高越好，请根据财报数据客观打分。不要输出财报综合评分，综合分由系统计算。不要给实盘交易指令，不要提及其他市场。",
+      sentimentAnalysisSystemPrompt:
+        "你是 KittyRed 的沪深 A 股舆情分析助手。只输出一个 JSON 对象，不要 Markdown、代码块或任何前后缀。任务：基于用户提供的真实社媒讨论，分别给出六个维度的 0-100 整数分数和判断原因。原因必须尽量引用输入中的平台、作者、标题、原文摘要或链接；不要编造不存在的来源、观点或数据。字段名必须完全一致：情感倾向、关注热度、传播动能、信息影响力、来源可靠性、舆论共识度。每个字段的值必须是对象，包含 score 和 reason。不要输出总分，总分由系统按六个 score 的平均值计算。不要给实盘交易指令，不要提及其他市场。",
+    } as unknown) as null);
+
+    const loaded = await loadSettingsFormData();
+
+    expect(loaded.financialReportSystemPrompt).toContain("输出示例");
+    expect(loaded.financialReportSystemPrompt).toContain("\"收入质量\":7");
+    expect(loaded.sentimentAnalysisSystemPrompt).toContain("输出示例");
+    expect(loaded.sentimentAnalysisSystemPrompt).toContain("\"情感倾向\":{\"score\":62");
   });
 
   it("loads stored model api key and xueqiu token back into the form from the backend", async () => {

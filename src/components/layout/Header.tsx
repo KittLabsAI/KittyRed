@@ -12,6 +12,10 @@ const routeTitles: Record<string, string> = {
   "/positions": "持仓",
   "/recommendations": "AI投资建议",
   "/recommendations/history": "AI投资建议",
+  "/backtest": "AI回测",
+  "/financial-reports": "财报分析",
+  "/sentiment": "舆情分析",
+  "/signals": "策略信号",
   "/settings": "设置",
 };
 

@@ -8,6 +8,7 @@ use crate::paper::PaperService;
 use crate::portfolio::PortfolioService;
 use crate::recommendations::automation::spawn_auto_analyze_worker;
 use crate::recommendations::RecommendationService;
+use crate::sentiment::SentimentAnalysisService;
 use crate::settings::SettingsService;
 use crate::signals::SignalService;
 use std::path::PathBuf;
@@ -108,6 +109,7 @@ pub struct AppState {
     pub signal_service: SignalService,
     pub backtest_service: BacktestService,
     pub financial_report_service: FinancialReportService,
+    pub sentiment_analysis_service: SentimentAnalysisService,
 }
 
 impl AppState {
@@ -115,6 +117,7 @@ impl AppState {
         let recommendation_path = recommendation_path_for(&settings_path);
         let backtest_path = backtest_path_for(&settings_path);
         let financial_report_path = financial_report_path_for(&settings_path);
+        let sentiment_analysis_path = sentiment_analysis_path_for(&settings_path);
         let market_cache_path = market_cache_path_for(&settings_path);
         let paper_path = paper_path_for(&settings_path);
         let job_history_path = recommendation_path.clone();
@@ -149,6 +152,8 @@ impl AppState {
                 .expect("backtest service should initialize"),
             financial_report_service: FinancialReportService::new(financial_report_path)
                 .expect("financial report service should initialize"),
+            sentiment_analysis_service: SentimentAnalysisService::new(sentiment_analysis_path)
+                .expect("sentiment analysis service should initialize"),
         };
 
         spawn_auto_analyze_worker(
@@ -159,6 +164,7 @@ impl AppState {
             state.notification_service.clone(),
             state.paper_service.clone(),
             state.financial_report_service.clone(),
+            state.sentiment_analysis_service.clone(),
             app_handle,
         );
         spawn_market_ticker_refresh_worker(
@@ -176,6 +182,7 @@ impl AppState {
             state.market_data_service.clone(),
             state.settings_service.clone(),
             state.financial_report_service.clone(),
+            state.sentiment_analysis_service.clone(),
         );
         spawn_stock_universe_cache_worker(
             state.settings_service.clone(),
@@ -218,6 +225,13 @@ fn financial_report_path_for(settings_path: &PathBuf) -> PathBuf {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("kittyred.financial_reports.sqlite3")
+}
+
+fn sentiment_analysis_path_for(settings_path: &PathBuf) -> PathBuf {
+    settings_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("kittyred.sentiment.sqlite3")
 }
 
 fn spawn_market_ticker_refresh_worker(

@@ -69,6 +69,17 @@ mod tests {
         assert!(tables.contains(&"financial_report_cache".to_string()));
         assert!(tables.contains(&"financial_report_analysis_cache".to_string()));
     }
+
+    #[test]
+    fn creates_sentiment_analysis_tables() {
+        let db = Database::in_memory().unwrap();
+        db.run_migrations().unwrap();
+        let tables = db.list_tables().unwrap();
+
+        assert!(tables.contains(&"sentiment_platform_auth_state".to_string()));
+        assert!(tables.contains(&"sentiment_discussion_cache".to_string()));
+        assert!(tables.contains(&"sentiment_analysis_cache".to_string()));
+    }
 }
 
 pub struct Database {
@@ -121,6 +132,8 @@ impl Database {
             .execute_batch(include_str!("migrations/0012_financial_reports.sql"))?;
         self.connection
             .execute_batch(include_str!("migrations/0013_backtest_equity_curve.sql"))?;
+        self.connection
+            .execute_batch(include_str!("migrations/0014_sentiment_analysis.sql"))?;
         self.run_market_cache_arbitrage_migration()?;
         self.run_market_cache_base_asset_migration()?;
         self.run_backtest_progress_migration()?;
@@ -209,12 +222,10 @@ impl Database {
     }
 
     fn run_backtest_ai_data_migration(&self) -> anyhow::Result<()> {
-        let columns = [
-            (
-                "kline_data_json",
-                "ALTER TABLE backtest_snapshots ADD COLUMN kline_data_json TEXT NOT NULL DEFAULT '{}'",
-            ),
-        ];
+        let columns = [(
+            "kline_data_json",
+            "ALTER TABLE backtest_snapshots ADD COLUMN kline_data_json TEXT NOT NULL DEFAULT '{}'",
+        )];
         for (column, statement) in columns {
             if !self.has_column("backtest_snapshots", column)? {
                 if let Err(error) = self.connection.execute_batch(statement) {

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Run frontend build
+        run: npm run build
+
+      - name: Run Python runtime unit test
+        run: python3 -m unittest backend.tests.test_runtime_bundle
+
+      - name: Build bundled Python runtime
+        run: npm run build:python-runtime
+
+      - name: Smoke test bundled Python runtime
+        run: npm run smoke:python-runtime
+
+      - name: Run Rust runtime bridge tests
+        run: cargo test python::tests
+        working-directory: src-tauri

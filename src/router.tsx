@@ -26,6 +26,9 @@ const BacktestPage = lazy(() =>
 const FinancialReportsPage = lazy(() =>
   import("./features/financial-reports/FinancialReportsPage").then((module) => ({ default: module.FinancialReportsPage })),
 );
+const SentimentAnalysisPage = lazy(() =>
+  import("./features/sentiment/SentimentAnalysisPage").then((module) => ({ default: module.SentimentAnalysisPage })),
+);
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage })),
 );
@@ -60,6 +63,7 @@ export function AppRouter() {
           <Route element={lazyPage(<RecommendationsPage />)} path="recommendations" />
           <Route element={lazyPage(<BacktestPage />)} path="backtest" />
           <Route element={lazyPage(<FinancialReportsPage />)} path="financial-reports" />
+          <Route element={lazyPage(<SentimentAnalysisPage />)} path="sentiment" />
           <Route element={<Navigate replace to="/recommendations" />} path="recommendations/history" />
           <Route element={lazyPage(<SettingsPage />)} path="settings" />
           <Route element={<Navigate replace to="/" />} path="*" />

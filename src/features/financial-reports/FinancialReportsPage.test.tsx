@@ -1,14 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FinancialReportsPage } from "./FinancialReportsPage";
 import type { FinancialReportAnalysisProgress, FinancialReportFetchProgress, FinancialReportOverview } from "../../lib/types";
 
+const echartsMocks = vi.hoisted(() => ({
+  chartSetOption: vi.fn(),
+}));
+
 vi.mock("echarts", () => ({
   default: undefined,
   init: () => ({
-    setOption: vi.fn(),
+    setOption: echartsMocks.chartSetOption,
     resize: vi.fn(),
     dispose: vi.fn(),
   }),
@@ -31,6 +35,7 @@ const {
   getFinancialReportFetchProgressMock,
   getFinancialReportOverviewMock,
   getFinancialReportSnapshotMock,
+  listMarketsMock,
   startFinancialReportAnalysisMock,
   startFinancialReportFetchMock,
 } = vi.hoisted(() => ({
@@ -38,6 +43,10 @@ const {
   getFinancialReportAnalysisProgressMock: vi.fn<() => Promise<FinancialReportAnalysisProgress>>(),
   getFinancialReportFetchProgressMock: vi.fn<() => Promise<FinancialReportFetchProgress>>(),
   getFinancialReportOverviewMock: vi.fn<() => Promise<FinancialReportOverview>>(),
+  listMarketsMock: vi.fn(async () => [
+    { symbol: "SHSE.600000", baseAsset: "浦发银行", marketType: "沪市A股", marketSizeTier: "large", last: 8.72, change24h: 0.81, volume24h: 1260000000, spreadBps: 0, venues: ["akshare"], updatedAt: "2026-05-08T10:00:00+08:00" },
+    { symbol: "SZSE.000001", baseAsset: "平安银行", marketType: "深市A股", marketSizeTier: "large", last: 11.34, change24h: -0.31, volume24h: 1050000000, spreadBps: 0, venues: ["akshare"], updatedAt: "2026-05-08T10:00:00+08:00" },
+  ]),
   getFinancialReportSnapshotMock: vi.fn(async () => ({
     stockCode: "SHSE.600000",
     stockName: "浦发银行",
@@ -127,6 +136,7 @@ vi.mock("../../lib/tauri", () => ({
   getFinancialReportFetchProgress: getFinancialReportFetchProgressMock,
   getFinancialReportOverview: getFinancialReportOverviewMock,
   getFinancialReportSnapshot: getFinancialReportSnapshotMock,
+  listMarkets: listMarketsMock,
   startFinancialReportAnalysis: startFinancialReportAnalysisMock,
   startFinancialReportFetch: startFinancialReportFetchMock,
 }));
@@ -306,9 +316,33 @@ describe("FinancialReportsPage", () => {
     expect(screen.getByRole("img", { name: "财报评分雷达图" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "财报子维度评分条形图" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "分析自选股票池财报" }));
+    const radar = screen.getByRole("img", { name: "财报评分雷达图" });
+    vi.spyOn(radar, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 200,
+      bottom: 200,
+      width: 200,
+      height: 200,
+      toJSON: () => ({}),
+    });
+    fireEvent.mouseMove(radar, { clientX: 100, clientY: 0 });
+    expect(screen.getByLabelText("盈利性评分说明")).toHaveTextContent("得分：8.18/10");
+    expect(screen.getByLabelText("盈利性评分说明")).toHaveTextContent("评分标准：净利与回报");
+    fireEvent.mouseMove(radar, { clientX: 10, clientY: 55 });
+    expect(screen.getByLabelText("真实性评分说明")).toHaveTextContent("得分：8.46/10");
+    expect(screen.getByLabelText("真实性评分说明")).toHaveTextContent("评分标准：盈利调节");
+    fireEvent.mouseMove(radar, { clientX: 190, clientY: 55 });
+    expect(screen.getByLabelText("运转效率评分说明")).toHaveTextContent("得分：8/10");
+
+    await user.click(screen.getByRole("button", { name: "AI财报分析" }));
+    expect(await screen.findByRole("dialog", { name: "选择参与财报 AI 分析的股票" })).toBeInTheDocument();
+    await user.click(screen.getAllByRole("checkbox")[0]);
+    await user.click(screen.getByRole("button", { name: "开始财报分析（1）" }));
     await waitFor(() => {
-      expect(startFinancialReportAnalysisMock).toHaveBeenCalled();
+      expect(startFinancialReportAnalysisMock).toHaveBeenCalledWith(["SZSE.000001"]);
     });
   });
 
@@ -349,5 +383,21 @@ describe("FinancialReportsPage", () => {
     expect(screen.getByText("贵州茅台")).toBeInTheDocument();
     expect(screen.getByText("2026-05-08 10:00:00")).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "财报分析进度" })).toBeInTheDocument();
+  });
+
+  it("blocks empty financial analysis selection", async () => {
+    const user = userEvent.setup();
+    getFinancialReportOverviewMock.mockResolvedValue({
+      ...emptyOverview,
+      stockCount: 1,
+      rowCount: 1,
+    });
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: "AI财报分析" }));
+    expect(await screen.findByRole("dialog", { name: "选择参与财报 AI 分析的股票" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "清空" }));
+    expect(screen.getByText("至少选择 1 只股票才能继续。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始财报分析（0）" })).toBeDisabled();
   });
 });

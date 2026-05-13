@@ -117,7 +117,9 @@ pub async fn start_backtest(
         state.settings_service.clone(),
         state.market_data_service.clone(),
         state.financial_report_service.clone(),
+        state.sentiment_analysis_service.clone(),
         backtest_id,
+        None,
     );
     Ok(())
 }
@@ -126,13 +128,19 @@ pub async fn start_backtest(
 pub async fn start_generate_backtest_signals(
     state: tauri::State<'_, AppState>,
     backtest_id: String,
+    selected_symbols: Vec<String>,
 ) -> CommandResult<()> {
+    if selected_symbols.is_empty() {
+        return Err("请选择至少一只自选股后再生成 AI 信号".into());
+    }
     start_generate_backtest_signals_inner(
         state.backtest_service.clone(),
         state.settings_service.clone(),
         state.market_data_service.clone(),
         state.financial_report_service.clone(),
+        state.sentiment_analysis_service.clone(),
         backtest_id,
+        Some(selected_symbols),
     );
     Ok(())
 }
@@ -154,7 +162,9 @@ fn start_generate_backtest_signals_inner(
     settings_service: crate::settings::SettingsService,
     market_data_service: crate::market::MarketDataService,
     financial_report_service: crate::financial_reports::FinancialReportService,
+    sentiment_analysis_service: crate::sentiment::SentimentAnalysisService,
     backtest_id: String,
+    selected_symbols: Option<Vec<String>>,
 ) {
     tauri::async_runtime::spawn(async move {
         let _ = service
@@ -163,6 +173,8 @@ fn start_generate_backtest_signals_inner(
                 &settings_service,
                 &market_data_service,
                 &financial_report_service,
+                &sentiment_analysis_service,
+                selected_symbols.as_deref(),
             )
             .await;
     });
@@ -236,6 +248,7 @@ pub fn resume_pending_backtest_jobs(
     market_data_service: crate::market::MarketDataService,
     settings_service: crate::settings::SettingsService,
     financial_report_service: crate::financial_reports::FinancialReportService,
+    sentiment_analysis_service: crate::sentiment::SentimentAnalysisService,
 ) {
     if let Ok(dataset_ids) = service.active_fetch_dataset_ids() {
         for dataset_id in dataset_ids {
@@ -266,7 +279,9 @@ pub fn resume_pending_backtest_jobs(
                     settings_service.clone(),
                     market_data_service.clone(),
                     financial_report_service.clone(),
+                    sentiment_analysis_service.clone(),
                     backtest_id,
+                    None,
                 );
             }
         }

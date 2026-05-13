@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   CUSTOM_MODEL_PROVIDER,
   createDefaultSettingsFormData,
@@ -15,6 +16,7 @@ import {
   type HistoricalDataSourceSetting,
   type IntradayDataSourceSetting,
   type ModelInterfaceSetting,
+  type SentimentSamplingOrder,
   type SettingsFormData,
 } from "../../lib/settings";
 import { useAppStore } from "../../store/appStore";
@@ -23,6 +25,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/ca
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { Textarea } from "../../components/ui/textarea";
+import {
+  captureSentimentPlatformLoginState,
+  getSentimentPlatformAuthStatuses,
+  testSentimentPlatformConnections,
+} from "../../lib/tauri";
+import type { SentimentPlatformAuthStatus } from "../../lib/types";
 
 type SettingsTab = {
   id: string;
@@ -32,6 +40,7 @@ type SettingsTab = {
 
 const tabs: SettingsTab[] = [
   { id: "akshare", label: "数据源", blurb: "检查 AKShare 本地数据接口状态。" },
+  { id: "sentiment", label: "舆情分析", blurb: "管理社媒平台登录态并测试平台连接。" },
   { id: "models", label: "模型", blurb: "设置 AI 分析使用的模型服务。" },
   { id: "aiTrade", label: "AI交易", blurb: "集中设置 AI 分析、风险阈值和策略信号。" },
   { id: "prompt", label: "提示词", blurb: "编辑 Assistant 和 AI 推荐的完整系统提示词。" },
@@ -77,6 +86,7 @@ const effortLevelOptions: Array<{ id: EffortLevel; label: string }> = [
 ];
 
 type AkshareConnectionRowStatus = "testing" | "success" | "error";
+type SentimentLoginPlatform = "zhihu" | "xiaohongshu" | "douyin" | "xueqiu";
 
 type AkshareConnectionRow = {
   id: AkshareConnectionTestItemId;
@@ -84,6 +94,14 @@ type AkshareConnectionRow = {
   sourceLabel: string;
   status: AkshareConnectionRowStatus;
   message: string;
+};
+
+type SentimentPlatformDragState = {
+  platform: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 const intradayDataSourceLabels: Record<IntradayDataSourceSetting, string> = {
@@ -117,6 +135,34 @@ const akshareConnectionItems: Array<{
   { id: "companyInfo", label: "公司基础资料", sourceLabel: () => "雪球接口" },
   { id: "tradeCalendar", label: "交易日历", sourceLabel: () => "新浪交易日历" },
 ];
+
+const sentimentLoginPlatforms: Array<{ id: SentimentLoginPlatform; label: string; url: string }> = [
+  { id: "zhihu", label: "知乎", url: "https://www.zhihu.com" },
+  { id: "xiaohongshu", label: "小红书", url: "https://www.xiaohongshu.com" },
+  { id: "douyin", label: "抖音", url: "https://www.douyin.com" },
+  { id: "xueqiu", label: "雪球", url: "https://xueqiu.com" },
+];
+
+const sentimentPlatformLabels: Record<string, string> = {
+  weibo: "微博",
+  xiaohongshu: "小红书",
+  bilibili: "B站",
+  zhihu: "知乎",
+  douyin: "抖音",
+  wechat: "微信公众号",
+  baidu: "百度",
+  toutiao: "今日头条",
+  xueqiu: "雪球",
+};
+
+const sentimentSamplingOrderOptions: Array<{ id: SentimentSamplingOrder; label: string }> = [
+  { id: "time_first", label: "时间优先" },
+  { id: "platform_first", label: "平台优先" },
+];
+
+function sentimentPlatformLabel(platform: string) {
+  return sentimentPlatformLabels[platform] ?? platform;
+}
 
 function statusIcon(status: AkshareConnectionRowStatus) {
   if (status === "success") {
@@ -199,6 +245,13 @@ export function SettingsPage() {
   const [isTestingAkshare, setIsTestingAkshare] = useState(false);
   const [isTestingModel, setIsTestingModel] = useState(false);
   const [akshareConnectionRows, setAkshareConnectionRows] = useState<AkshareConnectionRow[]>([]);
+  const [sentimentAuthStatuses, setSentimentAuthStatuses] = useState<SentimentPlatformAuthStatus[]>([]);
+  const [sentimentConnectionRows, setSentimentConnectionRows] = useState<AkshareConnectionRow[]>([]);
+  const [isTestingSentiment, setIsTestingSentiment] = useState(false);
+  const [isCapturingSentimentLogin, setIsCapturingSentimentLogin] = useState(false);
+  const [loginPlatform, setLoginPlatform] = useState<(typeof sentimentLoginPlatforms)[number] | null>(null);
+  const draggedSentimentPlatformRef = useRef<string | null>(null);
+  const [sentimentPlatformDrag, setSentimentPlatformDrag] = useState<SentimentPlatformDragState | null>(null);
   const currentTab = tabs.find((tab) => tab.id === activeTab) ?? tabs[0];
 
   useEffect(() => {
@@ -222,6 +275,20 @@ export function SettingsPage() {
       cancelled = true;
     };
   }, [setAccountMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSentimentPlatformAuthStatuses()
+      .then((items) => {
+        if (!cancelled) {
+          setSentimentAuthStatuses(items);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSave() {
     setIsSaving(true);
@@ -301,6 +368,75 @@ export function SettingsPage() {
     }
   }
 
+  async function handleConfirmSentimentLogin() {
+    if (!loginPlatform) return;
+    setIsCapturingSentimentLogin(true);
+    try {
+      await captureSentimentPlatformLoginState(loginPlatform.id);
+      const statuses = await getSentimentPlatformAuthStatuses();
+      setSentimentAuthStatuses(statuses);
+      const isCaptured = statuses.some((item) => item.platform === loginPlatform.id && item.hasLoginState);
+      if (!isCaptured) {
+        setStatusMessage(`${loginPlatform.label} 登录态获取失败：后端未确认有效登录态。`);
+        return;
+      }
+      setStatusMessage(`${loginPlatform.label} 登录态已成功获取。`);
+      setLoginPlatform(null);
+    } catch (error) {
+      setStatusMessage(`${loginPlatform.label} 登录态获取失败：${String(error)}`);
+    } finally {
+      setIsCapturingSentimentLogin(false);
+    }
+  }
+
+  async function openSentimentLoginPlatform(platform: (typeof sentimentLoginPlatforms)[number]) {
+    setLoginPlatform(platform);
+    try {
+      await openUrl(platform.url);
+    } catch {
+      window.open(platform.url, "_blank", "noopener,noreferrer");
+    }
+  }
+
+  async function handleTestSentimentConnections() {
+    setIsTestingSentiment(true);
+    const initialRows = Object.entries(sentimentPlatformLabels).map(([id, label]) => ({
+      id: id as AkshareConnectionTestItemId,
+      label,
+      sourceLabel: "社媒平台",
+      status: "testing" as AkshareConnectionRowStatus,
+      message: "测试中",
+    }));
+    setSentimentConnectionRows(initialRows);
+    setStatusMessage("正在测试社媒平台连接...");
+    try {
+      const results = await testSentimentPlatformConnections();
+      setSentimentConnectionRows(
+        initialRows.map((row) => {
+          const result = results.find((item) => item.platform === row.id);
+          return result
+            ? {
+                ...row,
+                status: result.ok ? "success" : "error",
+                message: result.message,
+              }
+            : row;
+        }),
+      );
+      const successCount = results.filter((item) => item.ok).length;
+      const failureCount = results.length - successCount;
+      setStatusMessage(
+        failureCount > 0
+          ? `社媒平台连接测试完成：${successCount} 项成功，${failureCount} 项失败。`
+          : `社媒平台连接测试完成：${successCount} 项成功。`,
+      );
+    } catch (error) {
+      setStatusMessage(`社媒平台连接测试失败：${String(error)}`);
+    } finally {
+      setIsTestingSentiment(false);
+    }
+  }
+
   function toggleAiKlineFrequency(frequency: AiKlineFrequency) {
     setForm((current) => {
       const selected = current.aiKlineFrequencies.includes(frequency)
@@ -311,6 +447,72 @@ export function SettingsPage() {
         aiKlineFrequencies: selected.length > 0 ? selected : [frequency],
       };
     });
+  }
+
+  function reorderSentimentPlatformPriority(source: string, target: string) {
+    if (source === target) return;
+    setForm((current) => {
+      const next = current.sentimentPlatformPriority.filter((platform) => platform !== source);
+      const targetIndex = next.indexOf(target);
+      if (targetIndex < 0) return current;
+      next.splice(targetIndex, 0, source);
+      return { ...current, sentimentPlatformPriority: next };
+    });
+  }
+
+  function moveDraggedSentimentPlatform(target: string) {
+    const source = draggedSentimentPlatformRef.current;
+    if (!source) return;
+    reorderSentimentPlatformPriority(source, target);
+  }
+
+  function startSentimentPlatformDrag(event: React.PointerEvent<HTMLButtonElement>, platform: string) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    draggedSentimentPlatformRef.current = platform;
+    setSentimentPlatformDrag({
+      platform,
+      x: event.clientX,
+      y: event.clientY,
+      width: rect.width,
+      height: rect.height,
+    });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  function updateSentimentPlatformDrag(event: React.PointerEvent<HTMLButtonElement>) {
+    if (!draggedSentimentPlatformRef.current) return;
+    setSentimentPlatformDrag((current) => current ? { ...current, x: event.clientX, y: event.clientY } : current);
+    const target = document
+      .elementsFromPoint(event.clientX, event.clientY)
+      .find((element) => element instanceof HTMLElement && element.dataset.sentimentPlatform)
+      ?.getAttribute("data-sentiment-platform");
+    if (target) {
+      moveDraggedSentimentPlatform(target);
+    }
+  }
+
+  function finishSentimentPlatformDrag(event?: React.PointerEvent<HTMLButtonElement>, target?: string) {
+    if (target) {
+      moveDraggedSentimentPlatform(target);
+    }
+    if (event) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+    draggedSentimentPlatformRef.current = null;
+    setSentimentPlatformDrag(null);
+  }
+
+  function setSentimentNumberSetting(
+    key: "sentimentFetchRecentDays" | "sentimentItemMaxChars",
+    value: string,
+    max: number,
+  ) {
+    const parsed = Math.trunc(Number(value) || 1);
+    setForm((current) => ({
+      ...current,
+      [key]: Math.min(max, Math.max(1, parsed)),
+    }));
   }
 
   return (
@@ -433,6 +635,126 @@ export function SettingsPage() {
                   ) : null}
                 </div>
               </Field>
+            </div>
+          ) : null}
+
+          {activeTab === "sentiment" ? (
+            <div className="form-stack">
+              <section className="settings-section-block">
+                <span className="section-label">舆情抽样设置</span>
+                <div className="field">
+                  <label>AI分析舆情时的平台优先级</label>
+                  <div className="sentiment-platform-priority" aria-label="AI分析舆情时的平台优先级">
+                    {form.sentimentPlatformPriority.map((platform) => (
+                      <button
+                        className={sentimentPlatformDrag?.platform === platform ? "sentiment-platform-chip sentiment-platform-chip--dragging-source" : "sentiment-platform-chip"}
+                        data-sentiment-platform={platform}
+                        key={platform}
+                        onPointerDown={(event) => startSentimentPlatformDrag(event, platform)}
+                        onPointerMove={(event) => updateSentimentPlatformDrag(event)}
+                        onPointerUp={(event) => finishSentimentPlatformDrag(event, platform)}
+                        onPointerCancel={(event) => finishSentimentPlatformDrag(event)}
+                        type="button"
+                      >
+                        {sentimentPlatformLabel(platform)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="form-grid">
+                  <Field label="拉取舆情的最近天数">
+                    <Input
+                      aria-label="拉取舆情的最近天数"
+                      max={30}
+                      min={1}
+                      step="1"
+                      type="number"
+                      value={form.sentimentFetchRecentDays}
+                      onChange={(event) => setSentimentNumberSetting("sentimentFetchRecentDays", event.target.value, 30)}
+                    />
+                  </Field>
+                  <Field label="每条舆情的限制字数">
+                    <Input
+                      aria-label="每条舆情的限制字数"
+                      max={1000}
+                      min={1}
+                      step="1"
+                      type="number"
+                      value={form.sentimentItemMaxChars}
+                      onChange={(event) => setSentimentNumberSetting("sentimentItemMaxChars", event.target.value, 1000)}
+                    />
+                  </Field>
+                  <Field label="抽样优先规则">
+                    <Select
+                      aria-label="抽样优先规则"
+                      value={form.sentimentSamplingOrder}
+                      onChange={(event) => setForm((current) => ({ ...current, sentimentSamplingOrder: event.target.value as SentimentSamplingOrder }))}
+                    >
+                      {sentimentSamplingOrderOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              </section>
+
+              <section className="settings-section-block">
+                <span className="section-label">平台登录态</span>
+                <div className="grid gap-3">
+                  {sentimentLoginPlatforms.map((platform) => {
+                    const hasLoginState = sentimentAuthStatuses.some(
+                      (item) => item.platform === platform.id && item.hasLoginState,
+                    );
+                    return (
+                      <div className="flex items-center justify-between rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm" key={platform.id}>
+                        <div className="grid gap-1">
+                          <span>{platform.label}</span>
+                          {hasLoginState ? <span className="text-emerald-500">已成功获取登录态</span> : null}
+                        </div>
+                        <Button
+                          onClick={() => void openSentimentLoginPlatform(platform)}
+                          type="button"
+                          variant="outline"
+                        >
+                          {hasLoginState ? "刷新登录态" : "获取登录态"}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="settings-section-block">
+                <span className="section-label">连接测试</span>
+                <div className="space-y-3">
+                  <Button
+                    disabled={isTestingSentiment}
+                    onClick={() => void handleTestSentimentConnections()}
+                    type="button"
+                  >
+                    {isTestingSentiment ? "测试中..." : "测试社媒平台连接"}
+                  </Button>
+                  {sentimentConnectionRows.length > 0 ? (
+                    <div className="grid gap-2">
+                      {sentimentConnectionRows.map((row) => (
+                        <div
+                          key={row.id}
+                          className="flex items-center justify-between rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm"
+                          title={row.message}
+                        >
+                          <span>{row.label}</span>
+                          <span className="inline-flex items-center gap-2">
+                            {statusIcon(row.status)}
+                            <span>{statusLabel(row.status)}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </section>
             </div>
           ) : null}
 
@@ -570,6 +892,28 @@ export function SettingsPage() {
                   </Field>
                   <Field label="思考深度">
                     <Select aria-label="财报模型思考深度" value={form.financialReportModel.effortLevel} onChange={(event) => setForm((current) => ({ ...current, financialReportModel: { ...current.financialReportModel, effortLevel: event.target.value as EffortLevel } }))}>
+                      {effortLevelOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              </section>
+              <section className="settings-section-block">
+                <span className="section-label">AI舆情分析</span>
+                <p className="settings-copy text-sm text-muted-foreground">控制舆情 AI 分析的模型参数。</p>
+                <div className="form-grid form-grid--four">
+                  <Field label="温度">
+                    <Input aria-label="舆情模型温度" max={2} min={0} step="0.1" type="number" value={form.sentimentAnalysisModel.temperature} onChange={(event) => setForm((current) => ({ ...current, sentimentAnalysisModel: { ...current.sentimentAnalysisModel, temperature: Number(event.target.value || 0) } }))} />
+                  </Field>
+                  <Field label="最大输出 Token">
+                    <Input aria-label="舆情模型最大输出 Token" min={1} step="1" type="number" value={form.sentimentAnalysisModel.maxTokens} onChange={(event) => setForm((current) => ({ ...current, sentimentAnalysisModel: { ...current.sentimentAnalysisModel, maxTokens: Number(event.target.value || 1) } }))} />
+                  </Field>
+                  <Field label="最大上下文 Token">
+                    <Input aria-label="舆情模型最大上下文 Token" min={1024} step="1024" type="number" value={form.sentimentAnalysisModel.maxContext} onChange={(event) => setForm((current) => ({ ...current, sentimentAnalysisModel: { ...current.sentimentAnalysisModel, maxContext: Number(event.target.value || 1024) } }))} />
+                  </Field>
+                  <Field label="思考深度">
+                    <Select aria-label="舆情模型思考深度" value={form.sentimentAnalysisModel.effortLevel} onChange={(event) => setForm((current) => ({ ...current, sentimentAnalysisModel: { ...current.sentimentAnalysisModel, effortLevel: event.target.value as EffortLevel } }))}>
                       {effortLevelOptions.map((option) => (
                         <option key={option.id} value={option.id}>{option.label}</option>
                       ))}
@@ -724,11 +1068,25 @@ export function SettingsPage() {
                   onChange={(event) => setForm((current) => ({ ...current, assistantSystemPrompt: event.target.value }))}
                 />
               </Field>
-              <Field label="AI 推荐系统提示词">
+              <Field label="AI推荐/回测系统提示词">
                 <Textarea
-                  aria-label="AI 推荐系统提示词"
+                  aria-label="AI推荐/回测系统提示词"
                   value={form.recommendationSystemPrompt}
                   onChange={(event) => setForm((current) => ({ ...current, recommendationSystemPrompt: event.target.value }))}
+                />
+              </Field>
+              <Field label="AI财报分析系统提示词">
+                <Textarea
+                  aria-label="AI财报分析系统提示词"
+                  value={form.financialReportSystemPrompt}
+                  onChange={(event) => setForm((current) => ({ ...current, financialReportSystemPrompt: event.target.value }))}
+                />
+              </Field>
+              <Field label="AI舆情分析系统提示词">
+                <Textarea
+                  aria-label="AI舆情分析系统提示词"
+                  value={form.sentimentAnalysisSystemPrompt}
+                  onChange={(event) => setForm((current) => ({ ...current, sentimentAnalysisSystemPrompt: event.target.value }))}
                 />
               </Field>
             </div>
@@ -750,6 +1108,39 @@ export function SettingsPage() {
           {statusMessage}
         </p>
       </div>
+      {sentimentPlatformDrag ? (
+        <div
+          className="sentiment-platform-drag-preview"
+          style={{
+            height: sentimentPlatformDrag.height,
+            left: sentimentPlatformDrag.x,
+            top: sentimentPlatformDrag.y,
+            width: sentimentPlatformDrag.width,
+          }}
+        >
+          {sentimentPlatformLabel(sentimentPlatformDrag.platform)}
+        </div>
+      ) : null}
+      {loginPlatform ? (
+        <div aria-label={`${loginPlatform.label}登录态获取`} aria-modal="true" className="modal-overlay" role="dialog">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2>{`获取${loginPlatform.label}登录态`}</h2>
+            </div>
+            <div className="modal-body">
+              <p>{`请在打开的浏览器中登录${loginPlatform.label}，登录成功后回到这里点击确定。`}</p>
+            </div>
+            <div className="modal-actions">
+              <Button onClick={() => setLoginPlatform(null)} type="button" variant="outline">
+                取消
+              </Button>
+              <Button disabled={isCapturingSentimentLogin} onClick={() => void handleConfirmSentimentLogin()} type="button">
+                {isCapturingSentimentLogin ? "获取中..." : "确定"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

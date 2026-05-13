@@ -23,7 +23,9 @@ use crate::models::{
     OhlcvBar, RiskDecisionDto, RuntimeSettingsDto,
 };
 use crate::recommendations::llm::{self, PositionContext, RECOMMENDATION_PROMPT_VERSION};
+use crate::sentiment::SentimentAnalysisService;
 use crate::settings::SettingsService;
+use crate::watchlist_selection::normalize_selected_symbols;
 
 const DEFAULT_SPREAD_BPS: f64 = 3.0;
 const COST_RATE: f64 = 0.001;
@@ -315,12 +317,15 @@ impl BacktestService {
         settings_service: &SettingsService,
         market_data_service: &MarketDataService,
         financial_report_service: &FinancialReportService,
+        sentiment_analysis_service: &SentimentAnalysisService,
     ) -> anyhow::Result<()> {
         self.generate_signals(
             backtest_id,
             settings_service,
             market_data_service,
             financial_report_service,
+            sentiment_analysis_service,
+            None,
         )
         .await?;
         self.replay_trades(backtest_id).await
@@ -332,6 +337,8 @@ impl BacktestService {
         settings_service: &SettingsService,
         market_data_service: &MarketDataService,
         financial_report_service: &FinancialReportService,
+        sentiment_analysis_service: &SentimentAnalysisService,
+        selected_symbols: Option<&[String]>,
     ) -> anyhow::Result<()> {
         let cancel = self.cancel_flag(backtest_id);
         cancel.store(false, Ordering::SeqCst);
@@ -348,7 +355,9 @@ impl BacktestService {
                 settings_service,
                 market_data_service,
                 financial_report_service,
+                sentiment_analysis_service,
                 cancel.clone(),
+                selected_symbols,
             )
             .await;
         match result {
@@ -741,11 +750,20 @@ impl BacktestService {
         settings_service: &SettingsService,
         _market_data_service: &MarketDataService,
         financial_report_service: &FinancialReportService,
+        sentiment_analysis_service: &SentimentAnalysisService,
         cancel: Arc<AtomicBool>,
+        selected_symbols: Option<&[String]>,
     ) -> anyhow::Result<()> {
-        let snapshots = self.load_snapshots(&run.dataset_id)?;
+        let mut snapshots = self.load_snapshots(&run.dataset_id)?;
         if snapshots.is_empty() {
             bail!("回测数据集没有可用快照");
+        }
+        if let Some(selected_symbols) = selected_symbols {
+            let selected = normalize_selected_symbols(selected_symbols);
+            snapshots.retain(|snapshot| selected.contains(&snapshot.symbol));
+        }
+        if snapshots.is_empty() {
+            bail!("回测数据集没有匹配所选股票的快照");
         }
         let existing = self.existing_signal_keys(&run.backtest_id)?;
         let pending = snapshots
@@ -767,6 +785,8 @@ impl BacktestService {
                 let row = market_row_from_snapshot(&snapshot);
                 let financial_report_analysis =
                     backtest_financial_context(financial_report_service, runtime, &snapshot.symbol);
+                let sentiment_analysis =
+                    backtest_sentiment_context(sentiment_analysis_service, &snapshot.symbol);
                 let stock_info = serde_json::from_str(&snapshot.stock_info)
                     .unwrap_or_else(|_| serde_json::json!({}));
                 let kline_map = snapshot_kline_map(&snapshot);
@@ -780,6 +800,7 @@ impl BacktestService {
                             1_000_000.0,
                             None::<&PositionContext>,
                             financial_report_analysis.clone(),
+                            sentiment_analysis.clone(),
                             stock_info.clone(),
                             kline_map.clone(),
                         )
@@ -2572,6 +2593,16 @@ fn backtest_financial_context(
     }
     financial_report_service
         .shared_ai_financial_context(stock_code)
+        .ok()
+        .flatten()
+}
+
+fn backtest_sentiment_context(
+    sentiment_analysis_service: &SentimentAnalysisService,
+    stock_code: &str,
+) -> Option<crate::models::AiSentimentAnalysisContextDto> {
+    sentiment_analysis_service
+        .shared_ai_sentiment_context(stock_code)
         .ok()
         .flatten()
 }

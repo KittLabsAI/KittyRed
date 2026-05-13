@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RecommendationsPage } from "./RecommendationsPage";
 
 const {
@@ -9,8 +9,18 @@ const {
   getRecommendationGenerationProgressMock,
   deleteRecommendationMock,
   getRecommendationAuditMock,
+  getFinancialReportAnalysisMock,
+  getSentimentAnalysisResultsMock,
 } = vi.hoisted(() => ({
   startRecommendationGenerationMock: vi.fn(async () => undefined),
+  getFinancialReportAnalysisMock: vi.fn(
+    async (symbol: string): Promise<{ stockCode: string } | null> => ({ stockCode: symbol }),
+  ),
+  getSentimentAnalysisResultsMock: vi.fn(async () => [
+    { stockCode: "SHSE.600000" },
+    { stockCode: "SZSE.000001" },
+    { stockCode: "SHSE.600519" },
+  ]),
   getRecommendationGenerationProgressMock: vi.fn(async () => ({
     status: "running",
     completedCount: 2,
@@ -202,6 +212,8 @@ vi.mock("../../lib/tauri", () => ({
       updatedAt: "2026-05-06T10:00:00+08:00",
     },
   ]),
+  getFinancialReportAnalysis: getFinancialReportAnalysisMock,
+  getSentimentAnalysisResults: getSentimentAnalysisResultsMock,
   startRecommendationGeneration: startRecommendationGenerationMock,
   getRecommendationGenerationProgress: getRecommendationGenerationProgressMock,
   deleteRecommendation: deleteRecommendationMock,
@@ -217,6 +229,16 @@ function renderPage() {
 }
 
 describe("RecommendationsPage", () => {
+  beforeEach(() => {
+    startRecommendationGenerationMock.mockClear();
+    getFinancialReportAnalysisMock.mockImplementation(async (symbol: string) => ({ stockCode: symbol }));
+    getSentimentAnalysisResultsMock.mockResolvedValue([
+      { stockCode: "SHSE.600000" },
+      { stockCode: "SZSE.000001" },
+      { stockCode: "SHSE.600519" },
+    ]);
+  });
+
   it("merges latest AI recommendation and history into one Chinese page", async () => {
     const user = userEvent.setup();
     renderPage();
@@ -255,7 +277,10 @@ describe("RecommendationsPage", () => {
     expect(await screen.findByText("分页测试建议 9")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成AI建议" }));
-    expect(startRecommendationGenerationMock).toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: "选择参与 AI 建议分析的股票" })).toBeInTheDocument();
+    await user.click(screen.getAllByRole("checkbox")[0]);
+    await user.click(screen.getByRole("button", { name: "开始生成AI建议（2）" }));
+    expect(startRecommendationGenerationMock).toHaveBeenCalledWith(["SZSE.000001", "SHSE.600519"]);
   });
 
   it("filters recommendation history by trade direction", async () => {
@@ -276,6 +301,36 @@ describe("RecommendationsPage", () => {
     expect(await screen.findByText("输入浦发银行")).toBeInTheDocument();
     expect(screen.getByText("成交额低于阈值，1h K 线没有确认突破。")).toBeInTheDocument();
     expect(screen.getAllByText("-").length).toBeGreaterThan(0);
+  });
+
+  it("asks for confirmation when selected stocks miss financial or sentiment analysis", async () => {
+    const user = userEvent.setup();
+    getFinancialReportAnalysisMock.mockImplementation(
+      async (symbol: string): Promise<{ stockCode: string } | null> =>
+        symbol === "SHSE.600000" ? { stockCode: symbol } : null,
+    );
+    getSentimentAnalysisResultsMock.mockResolvedValueOnce([{ stockCode: "SZSE.000001" }]);
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "生成AI建议" }));
+    await user.click(screen.getByRole("button", { name: "开始生成AI建议" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "确认继续生成 AI 建议？" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText("浦发银行")).toBeInTheDocument();
+    expect(within(dialog).getByText("缺少 AI舆情分析")).toBeInTheDocument();
+    expect(within(dialog).getByText("平安银行")).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/缺少 AI财报分析/).length).toBeGreaterThan(0);
+    expect(startRecommendationGenerationMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "继续分析" }));
+    await waitFor(() =>
+      expect(startRecommendationGenerationMock).toHaveBeenCalledWith([
+        "SHSE.600000",
+        "SZSE.000001",
+        "SHSE.600519",
+      ]),
+    );
   });
 
   it("opens the audit drawer and can delete a recommendation", async () => {

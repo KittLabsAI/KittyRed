@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:python-runtime": "python3 scripts/build_python_runtime.py",
+    "smoke:python-runtime": "python3 scripts/smoke_test_python_runtime.py",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

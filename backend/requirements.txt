@@ -1,0 +1,4 @@
+akshare
+pandas
+playwright
+requests

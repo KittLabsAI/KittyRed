@@ -118,18 +118,30 @@ pub async fn get_financial_report_analysis_progress(
 #[tauri::command]
 pub async fn start_financial_report_analysis(
     state: tauri::State<'_, AppState>,
+    selected_symbols: Vec<String>,
 ) -> CommandResult<()> {
+    if selected_symbols.is_empty() {
+        return Err("请选择至少一只自选股后再开始财报分析".into());
+    }
     let service = state.financial_report_service.clone();
     let settings = state.settings_service.clone();
     let jobs = state.job_service.clone();
-    let input = serde_json::json!({ "scope": "watchlist" }).to_string();
+    let selected_symbols_for_job = selected_symbols.clone();
+    let input = serde_json::json!({
+        "scope": "watchlist",
+        "selectedSymbols": selected_symbols_for_job
+    })
+    .to_string();
     let job_id = jobs.start_job(
         kinds::FINANCIAL_REPORT_ANALYZE,
         "正在分析自选股票池财报",
         Some(input),
     );
     tauri::async_runtime::spawn(async move {
-        match service.analyze_watchlist_reports(&settings).await {
+        match service
+            .analyze_watchlist_reports(&settings, &selected_symbols)
+            .await
+        {
             Ok((success_count, failures)) => {
                 let mut message = format!("已完成 {success_count} 只自选股财报 AI 分析");
                 if !failures.is_empty() {

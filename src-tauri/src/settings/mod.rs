@@ -191,10 +191,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::models::{
-    default_assistant_system_prompt, default_recommendation_system_prompt,
+    default_assistant_system_prompt, default_financial_report_system_prompt,
+    default_recommendation_system_prompt, default_sentiment_analysis_system_prompt,
     ExchangeCredentialSummary, ModelUseCaseSettingsDto, RuntimeExchangeSettingsDto,
-    RuntimeNotificationSettingsDto, RuntimeSecretsSyncDto, RuntimeSettingsDto,
-    SettingsSnapshotDto,
+    RuntimeNotificationSettingsDto, RuntimeSecretsSyncDto, RuntimeSettingsDto, SettingsSnapshotDto,
 };
 use crate::notifications::NotificationPreferences;
 use secure_store::{FileSecretStore, InMemorySecretStore, SecretStore};
@@ -442,7 +442,7 @@ fn persist_runtime_settings(path: &Path, runtime: &RuntimeSettingsDto) -> anyhow
     Ok(())
 }
 
-fn default_runtime_settings() -> RuntimeSettingsDto {
+pub(crate) fn default_runtime_settings() -> RuntimeSettingsDto {
     RuntimeSettingsDto {
         exchanges: DEFAULT_EXCHANGES
             .iter()
@@ -475,6 +475,16 @@ fn default_runtime_settings() -> RuntimeSettingsDto {
             max_context: 64_000,
             effort_level: "off".into(),
         },
+        sentiment_analysis_model: ModelUseCaseSettingsDto {
+            temperature: 0.2,
+            max_tokens: 4_096,
+            max_context: 64_000,
+            effort_level: "off".into(),
+        },
+        sentiment_platform_priority: default_sentiment_platform_priority(),
+        sentiment_fetch_recent_days: 30,
+        sentiment_item_max_chars: 420,
+        sentiment_sampling_order: "time_first".into(),
         has_stored_model_api_key: false,
         has_stored_xueqiu_token: false,
         intraday_data_source: crate::models::default_intraday_data_source(),
@@ -503,6 +513,8 @@ fn default_runtime_settings() -> RuntimeSettingsDto {
         prompt_extension: String::new(),
         assistant_system_prompt: default_assistant_system_prompt(),
         recommendation_system_prompt: default_recommendation_system_prompt(),
+        financial_report_system_prompt: default_financial_report_system_prompt(),
+        sentiment_analysis_system_prompt: default_sentiment_analysis_system_prompt(),
         account_mode: "paper".into(),
         auto_paper_execution: false,
         notifications: RuntimeNotificationSettingsDto {
@@ -579,6 +591,21 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
             max_context: runtime.financial_report_model.max_context.max(1_024),
             effort_level: normalize_effort_level(&runtime.financial_report_model.effort_level),
         },
+        sentiment_analysis_model: ModelUseCaseSettingsDto {
+            temperature: runtime.sentiment_analysis_model.temperature.clamp(0.0, 2.0),
+            max_tokens: runtime.sentiment_analysis_model.max_tokens.max(1),
+            max_context: runtime.sentiment_analysis_model.max_context.max(1_024),
+            effort_level: normalize_effort_level(&runtime.sentiment_analysis_model.effort_level),
+        },
+        sentiment_platform_priority: normalize_sentiment_platform_priority(
+            runtime.sentiment_platform_priority,
+        ),
+        sentiment_fetch_recent_days: runtime.sentiment_fetch_recent_days.clamp(1, 30),
+        sentiment_item_max_chars: runtime.sentiment_item_max_chars.clamp(1, 1000),
+        sentiment_sampling_order: match runtime.sentiment_sampling_order.as_str() {
+            "platform_first" => "platform_first".into(),
+            _ => defaults.sentiment_sampling_order.clone(),
+        },
         has_stored_model_api_key: runtime.has_stored_model_api_key,
         has_stored_xueqiu_token: runtime.has_stored_xueqiu_token,
         intraday_data_source: match runtime.intraday_data_source.as_str() {
@@ -629,6 +656,21 @@ fn normalize_runtime_settings(runtime: RuntimeSettingsDto) -> RuntimeSettingsDto
         } else {
             runtime.recommendation_system_prompt
         },
+        financial_report_system_prompt: if runtime.financial_report_system_prompt.trim().is_empty()
+        {
+            default_financial_report_system_prompt()
+        } else {
+            runtime.financial_report_system_prompt
+        },
+        sentiment_analysis_system_prompt: if runtime
+            .sentiment_analysis_system_prompt
+            .trim()
+            .is_empty()
+        {
+            default_sentiment_analysis_system_prompt()
+        } else {
+            runtime.sentiment_analysis_system_prompt
+        },
         account_mode: "paper".into(),
         auto_paper_execution: runtime.auto_paper_execution,
         notifications: RuntimeNotificationSettingsDto {
@@ -672,6 +714,44 @@ fn normalize_ai_kline_frequencies(values: Vec<String>) -> Vec<String> {
     } else {
         normalized
     }
+}
+
+fn default_sentiment_platform_priority() -> Vec<String> {
+    [
+        "xueqiu",
+        "zhihu",
+        "weibo",
+        "xiaohongshu",
+        "douyin",
+        "bilibili",
+        "wechat",
+        "baidu",
+        "toutiao",
+    ]
+    .iter()
+    .map(|value| (*value).to_string())
+    .collect()
+}
+
+fn normalize_sentiment_platform_priority(values: Vec<String>) -> Vec<String> {
+    let defaults = default_sentiment_platform_priority();
+    let mut normalized = Vec::new();
+    for value in values {
+        if defaults.contains(&value) && !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    for value in defaults {
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+pub(crate) fn default_runtime_settings_for_tests() -> RuntimeSettingsDto {
+    default_runtime_settings()
 }
 
 fn normalize_symbol_list(values: Vec<String>) -> Vec<String> {

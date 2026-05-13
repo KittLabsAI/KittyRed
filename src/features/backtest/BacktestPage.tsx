@@ -2,6 +2,7 @@ import * as echarts from "echarts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, BarChart3, Database, Play, RotateCw, Square } from "lucide-react";
+import { WatchlistSelectionModal } from "../../components/WatchlistSelectionModal";
 import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
 import {
   createBacktest,
@@ -11,6 +12,8 @@ import {
   deleteBacktestDataset,
   getBacktestFetchProgress,
   getBacktestSummary,
+  getFinancialReportAnalysis,
+  getSentimentAnalysisResults,
   listBacktestFetchFailures,
   listBacktestDatasets,
   listMarkets,
@@ -28,6 +31,13 @@ import type {
   BacktestRun,
   MarketRow,
 } from "../../lib/types";
+
+type MissingAnalysisRow = {
+  symbol: string;
+  name: string;
+  missingFinancial: boolean;
+  missingSentiment: boolean;
+};
 
 type BacktestTab = "data" | "signal" | "replay" | "analysis";
 
@@ -333,6 +343,9 @@ export function BacktestPage() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [signalStockFilter, setSignalStockFilter] = useState("all");
   const [signalDirectionFilter, setSignalDirectionFilter] = useState("all");
+  const [signalSelectionOpen, setSignalSelectionOpen] = useState(false);
+  const [pendingSignalSymbols, setPendingSignalSymbols] = useState<string[] | null>(null);
+  const [missingAnalyses, setMissingAnalyses] = useState<MissingAnalysisRow[]>([]);
 
   const datasetsQuery = useQuery({
     queryKey: ["backtest-datasets"],
@@ -445,13 +458,13 @@ export function BacktestPage() {
     },
   });
   const generateSignalsMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (selectedSymbols: string[]) => {
       const run = await createBacktest({
         datasetId: activeDatasetId,
         name: runName,
         maxHoldingDays: 7,
       });
-      await startGenerateBacktestSignals(run.backtestId);
+      await startGenerateBacktestSignals(run.backtestId, selectedSymbols);
       return run;
     },
     onSuccess: async (run) => {
@@ -459,6 +472,48 @@ export function BacktestPage() {
       await queryClient.invalidateQueries({ queryKey: ["backtest-runs"] });
     },
   });
+
+  function stockDisplayName(symbol: string) {
+    return watchlistRows.find((row) => row.symbol === symbol)?.baseAsset ?? symbol;
+  }
+
+  async function confirmSignalSymbols(symbols: string[]) {
+    const sentimentSymbols = new Set(
+      (await getSentimentAnalysisResults().catch(() => [])).map((item) => item.stockCode),
+    );
+    const financialEntries = await Promise.all(
+      symbols.map(async (symbol) => [symbol, await getFinancialReportAnalysis(symbol).catch(() => null)] as const),
+    );
+    const financialSymbols = new Set(
+      financialEntries
+        .filter(([, analysis]) => analysis !== null)
+        .map(([symbol]) => symbol),
+    );
+    const missing = symbols
+      .map((symbol) => ({
+        symbol,
+        name: stockDisplayName(symbol),
+        missingFinancial: !financialSymbols.has(symbol),
+        missingSentiment: !sentimentSymbols.has(symbol),
+      }))
+      .filter((item) => item.missingFinancial || item.missingSentiment);
+    if (missing.length > 0) {
+      setPendingSignalSymbols(symbols);
+      setMissingAnalyses(missing);
+      return;
+    }
+    setSignalSelectionOpen(false);
+    generateSignalsMutation.mutate(symbols);
+  }
+
+  function continueSignalGeneration() {
+    if (!pendingSignalSymbols) return;
+    const symbols = pendingSignalSymbols;
+    setPendingSignalSymbols(null);
+    setMissingAnalyses([]);
+    setSignalSelectionOpen(false);
+    generateSignalsMutation.mutate(symbols);
+  }
   const replayMutation = useMutation({
     mutationFn: async (backtestId: string) => {
       await startReplayBacktest(backtestId);
@@ -668,7 +723,7 @@ export function BacktestPage() {
                 <button
                   className="sidebar__button backtest-icon-button backtest-form-action"
                   disabled={!activeDatasetId || generateSignalsMutation.isPending}
-                  onClick={() => generateSignalsMutation.mutate()}
+                  onClick={() => setSignalSelectionOpen(true)}
                   type="button"
                 >
                   <Play aria-hidden="true" size={17} />
@@ -695,6 +750,26 @@ export function BacktestPage() {
             setActiveTab("analysis");
           }} />
         </section>
+      ) : null}
+      <WatchlistSelectionModal
+        confirmLabel="开始生成AI信号"
+        description="从当前自选股池中勾选要进入本次 AI 回测信号生成的股票。"
+        onClose={() => setSignalSelectionOpen(false)}
+        onConfirm={(symbols) => void confirmSignalSymbols(symbols)}
+        open={signalSelectionOpen}
+        title="选择参与 AI 回测信号生成的股票"
+        watchlist={watchlistRows}
+      />
+      {missingAnalyses.length > 0 ? (
+        <MissingAnalysisConfirmModal
+          items={missingAnalyses}
+          onCancel={() => {
+            setPendingSignalSymbols(null);
+            setMissingAnalyses([]);
+          }}
+          onConfirm={continueSignalGeneration}
+          title="确认继续生成 AI 信号？"
+        />
       ) : null}
 
       {activeTab === "replay" ? (
@@ -1497,5 +1572,55 @@ function TradeTable({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function MissingAnalysisConfirmModal({
+  items,
+  onCancel,
+  onConfirm,
+  title,
+}: {
+  items: MissingAnalysisRow[];
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <section
+        aria-label={title}
+        aria-modal="true"
+        className="modal-content analysis-missing-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="modal-header">
+          <div>
+            <p className="section-label">分析数据缺失</p>
+            <h2>{title}</h2>
+            <p className="panel__meta">以下股票缺少 AI财报分析或 AI舆情分析结果，继续后 LLM 将收到空值。</p>
+          </div>
+        </div>
+        <div className="analysis-missing-list">
+          {items.map((item) => (
+            <div key={item.symbol}>
+              <strong>{item.name}</strong>
+              <span>{item.symbol}</span>
+              <em>
+                {[
+                  item.missingFinancial ? "缺少 AI财报分析" : null,
+                  item.missingSentiment ? "缺少 AI舆情分析" : null,
+                ].filter(Boolean).join("、")}
+              </em>
+            </div>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button className="ghost-button" onClick={onCancel} type="button">取消</button>
+          <button className="sidebar__button" onClick={onConfirm} type="button">继续分析</button>
+        </div>
+      </section>
+    </div>
   );
 }

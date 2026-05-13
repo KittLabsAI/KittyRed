@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsPage } from "./SettingsPage";
 
 const mocks = vi.hoisted(() => ({
+  openUrl: vi.fn(async () => undefined),
   testAkshareConnectionItem: vi.fn(async (itemId: string) => ({
     itemId,
     ok: true,
@@ -13,10 +14,25 @@ const mocks = vi.hoisted(() => ({
     ok: true,
     message: "模型连接正常",
   })),
+  getSentimentPlatformAuthStatuses: vi.fn(async () => [
+    { platform: "zhihu", hasLoginState: true, capturedAt: "2026-05-12T10:00:00+08:00" },
+  ]),
+  captureSentimentPlatformLoginState: vi.fn(async () => undefined),
+  testSentimentPlatformConnections: vi.fn(async () => [
+    { platform: "zhihu", ok: true, message: "知乎 连接测试可用" },
+    { platform: "xueqiu", ok: false, message: "雪球 未登录" },
+  ]),
+}));
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: mocks.openUrl,
 }));
 
 vi.mock("../../lib/tauri", () => ({
   listNotificationEvents: vi.fn(async () => []),
+  getSentimentPlatformAuthStatuses: mocks.getSentimentPlatformAuthStatuses,
+  captureSentimentPlatformLoginState: mocks.captureSentimentPlatformLoginState,
+  testSentimentPlatformConnections: mocks.testSentimentPlatformConnections,
 }));
 
 vi.mock("../../lib/settings", async (importOriginal) => {
@@ -36,6 +52,9 @@ vi.mock("../../lib/settings", async (importOriginal) => {
 
 describe("SettingsPage", () => {
   beforeEach(() => {
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    mocks.openUrl.mockReset();
+    mocks.openUrl.mockResolvedValue(undefined);
     mocks.testAkshareConnectionItem.mockReset();
     mocks.testAkshareConnectionItem.mockImplementation(async (itemId: string) => ({
       itemId,
@@ -47,6 +66,17 @@ describe("SettingsPage", () => {
       ok: true,
       message: "模型连接正常",
     });
+    mocks.getSentimentPlatformAuthStatuses.mockReset();
+    mocks.getSentimentPlatformAuthStatuses.mockResolvedValue([
+      { platform: "zhihu", hasLoginState: true, capturedAt: "2026-05-12T10:00:00+08:00" },
+    ]);
+    mocks.captureSentimentPlatformLoginState.mockReset();
+    mocks.captureSentimentPlatformLoginState.mockResolvedValue(undefined);
+    mocks.testSentimentPlatformConnections.mockReset();
+    mocks.testSentimentPlatformConnections.mockResolvedValue([
+      { platform: "zhihu", ok: true, message: "知乎 连接测试可用" },
+      { platform: "xueqiu", ok: false, message: "雪球 未登录" },
+    ]);
   });
 
   it("shows AKShare data-source settings without account credentials", async () => {
@@ -59,6 +89,7 @@ describe("SettingsPage", () => {
     expect(screen.getByText("新浪财经和腾讯证券的周线/月线由本地日线聚合生成。")).toBeInTheDocument();
     expect(screen.getByLabelText("雪球 Token")).toHaveAttribute("placeholder", "已保存雪球 Token，可直接覆盖");
     expect(screen.getByRole("tab", { name: "数据源" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "舆情分析" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "模型" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "AI交易" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "提示词" })).toBeInTheDocument();
@@ -71,6 +102,122 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("真实只读模式")).not.toBeInTheDocument();
     expect(screen.queryByText("交易所 API")).not.toBeInTheDocument();
     expect(screen.queryByText(/Crypto/i)).not.toBeInTheDocument();
+  });
+
+  it("shows sentiment login state controls and social platform connection test", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "舆情分析" }));
+
+    expect(screen.getByText("舆情抽样设置")).toBeInTheDocument();
+    expect(screen.getByLabelText("拉取舆情的最近天数")).toHaveValue(30);
+    expect(screen.getByLabelText("每条舆情的限制字数")).toHaveValue(420);
+    expect(screen.getByLabelText("抽样优先规则")).toHaveValue("time_first");
+    expect((await screen.findAllByText("知乎")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("小红书").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("抖音").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("雪球").length).toBeGreaterThan(0);
+    expect(screen.getByText("已成功获取登录态")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新登录态" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "获取登录态" })).toHaveLength(3);
+
+    await user.click(screen.getByRole("button", { name: "刷新登录态" }));
+    expect(mocks.openUrl).toHaveBeenCalledWith("https://www.zhihu.com");
+    const dialog = await screen.findByRole("dialog", { name: "知乎登录态获取" });
+    expect(dialog).toHaveClass("modal-overlay");
+    expect(within(dialog).getByText(/请在打开的浏览器中登录知乎/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确定" }));
+    expect(mocks.captureSentimentPlatformLoginState).toHaveBeenCalledWith("zhihu");
+
+    await user.click(screen.getByRole("button", { name: "测试社媒平台连接" }));
+    expect(mocks.testSentimentPlatformConnections).toHaveBeenCalled();
+    expect((await screen.findAllByText("知乎")).length).toBeGreaterThan(1);
+    expect(screen.getAllByText("雪球").length).toBeGreaterThan(1);
+    expect(screen.getByText("失败")).toBeInTheDocument();
+  });
+
+  it("reorders sentiment platform priority by dragging platform chips", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "舆情分析" }));
+    const priorityList = screen.getByLabelText("AI分析舆情时的平台优先级");
+    let chips = within(priorityList).getAllByRole("button");
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "雪球",
+      "知乎",
+      "微博",
+      "小红书",
+      "抖音",
+      "B站",
+      "微信公众号",
+      "百度",
+      "今日头条",
+    ]);
+
+    const originalElementsFromPoint = document.elementsFromPoint;
+    document.elementsFromPoint = vi.fn(() => [chips[0]]);
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: chips[2] },
+      { target: chips[0] },
+      { keys: "[/MouseLeft]" },
+    ]);
+    document.elementsFromPoint = originalElementsFromPoint;
+
+    chips = within(priorityList).getAllByRole("button");
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "微博",
+      "雪球",
+      "知乎",
+      "小红书",
+      "抖音",
+      "B站",
+      "微信公众号",
+      "百度",
+      "今日头条",
+    ]);
+  });
+
+  it("shows a floating preview while dragging sentiment platform priority", async () => {
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "舆情分析" }));
+    const priorityList = screen.getByLabelText("AI分析舆情时的平台优先级");
+    const chips = within(priorityList).getAllByRole("button");
+
+    const originalElementsFromPoint = document.elementsFromPoint;
+    document.elementsFromPoint = vi.fn(() => [chips[0]]);
+    await user.pointer([{ keys: "[MouseLeft>]", target: chips[2] }]);
+    await user.pointer([{ target: chips[0] }]);
+
+    expect(document.querySelector(".sentiment-platform-drag-preview")).toHaveTextContent("微博");
+    expect(chips[2]).toHaveClass("sentiment-platform-chip--dragging-source");
+    expect(within(priorityList).getAllByRole("button").map((chip) => chip.textContent)[0]).toBe("微博");
+
+    await user.pointer([{ keys: "[/MouseLeft]", target: chips[2] }]);
+    document.elementsFromPoint = originalElementsFromPoint;
+    expect(document.querySelector(".sentiment-platform-drag-preview")).toBeNull();
+  });
+
+  it("does not show sentiment login success unless backend status confirms it", async () => {
+    const user = userEvent.setup();
+    mocks.getSentimentPlatformAuthStatuses
+      .mockResolvedValueOnce([
+        { platform: "zhihu", hasLoginState: true, capturedAt: "2026-05-12T10:00:00+08:00" },
+      ])
+      .mockResolvedValueOnce([
+        { platform: "zhihu", hasLoginState: false, capturedAt: "2026-05-12T10:01:00+08:00" },
+      ]);
+    render(<SettingsPage />);
+
+    await user.click(await screen.findByRole("tab", { name: "舆情分析" }));
+    await user.click(await screen.findByRole("button", { name: "刷新登录态" }));
+    await user.click(screen.getByRole("button", { name: "确定" }));
+
+    expect(await screen.findByText("知乎 登录态获取失败：后端未确认有效登录态。")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "知乎登录态获取" })).toBeInTheDocument();
   });
 
   it("expands six AKShare test rows and uses the current source selections", async () => {
@@ -145,13 +292,15 @@ describe("SettingsPage", () => {
     expect(screen.getByText("AI推荐/回测")).toBeInTheDocument();
     expect(screen.getByText("AI助手")).toBeInTheDocument();
     expect(screen.getByText("AI财报分析")).toBeInTheDocument();
-    expect(screen.getAllByLabelText("温度")).toHaveLength(3);
-    expect(screen.getAllByLabelText("最大输出 Token")).toHaveLength(3);
-    expect(screen.getAllByLabelText("最大上下文 Token")).toHaveLength(3);
-    expect(screen.getAllByLabelText("思考深度")).toHaveLength(3);
+    expect(screen.getByText("AI舆情分析")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("温度")).toHaveLength(4);
+    expect(screen.getAllByLabelText("最大输出 Token")).toHaveLength(4);
+    expect(screen.getAllByLabelText("最大上下文 Token")).toHaveLength(4);
+    expect(screen.getAllByLabelText("思考深度")).toHaveLength(4);
     expect(screen.getByLabelText("推荐模型思考深度")).toHaveValue("off");
     expect(screen.getByLabelText("助手模型思考深度")).toHaveValue("off");
     expect(screen.getByLabelText("财报模型思考深度")).toHaveValue("off");
+    expect(screen.getByLabelText("舆情模型思考深度")).toHaveValue("off");
 
     await user.click(screen.getByRole("button", { name: "测试模型连接" }));
 
@@ -159,7 +308,7 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("模型连接正常")).toBeInTheDocument();
   });
 
-  it("edits full Assistant and recommendation system prompts", async () => {
+  it("edits full Assistant and AI analysis system prompts", async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
 
@@ -167,9 +316,17 @@ describe("SettingsPage", () => {
 
     expect(screen.queryByLabelText("提示词扩展")).not.toBeInTheDocument();
     const assistantPrompt = screen.getByLabelText("Assistant 系统提示词");
-    const recommendationPrompt = screen.getByLabelText("AI 推荐系统提示词");
+    const recommendationPrompt = screen.getByLabelText("AI推荐/回测系统提示词");
+    const financialReportPrompt = screen.getByLabelText("AI财报分析系统提示词");
+    const sentimentPrompt = screen.getByLabelText("AI舆情分析系统提示词");
     expect((assistantPrompt as HTMLTextAreaElement).value).toContain("KittyRed Assistant");
     expect((recommendationPrompt as HTMLTextAreaElement).value).toContain("沪深 A 股模拟投资助手");
+    expect((financialReportPrompt as HTMLTextAreaElement).value).toContain("财报分析助手");
+    expect((financialReportPrompt as HTMLTextAreaElement).value).toContain("输出示例");
+    expect((financialReportPrompt as HTMLTextAreaElement).value).toContain("\"收入质量\":7");
+    expect((sentimentPrompt as HTMLTextAreaElement).value).toContain("舆情分析助手");
+    expect((sentimentPrompt as HTMLTextAreaElement).value).toContain("输出示例");
+    expect((sentimentPrompt as HTMLTextAreaElement).value).toContain("\"情感倾向\":{\"score\":62");
 
     await user.clear(assistantPrompt);
     await user.type(assistantPrompt, "新的 Assistant 系统提示词");

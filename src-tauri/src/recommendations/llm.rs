@@ -9,8 +9,10 @@ mod tests {
         PositionContext, PromptKlineContext, StockAgentData,
     };
     use crate::models::{
-        default_assistant_system_prompt, AiFinancialReportContextDto, MarketListRow,
-        ModelUseCaseSettingsDto, RuntimeNotificationSettingsDto, RuntimeSettingsDto,
+        default_assistant_system_prompt, default_financial_report_system_prompt,
+        default_sentiment_analysis_system_prompt, AiFinancialReportContextDto,
+        AiSentimentAnalysisContextDto, MarketListRow, ModelUseCaseSettingsDto,
+        RuntimeNotificationSettingsDto, RuntimeSettingsDto,
     };
 
     #[test]
@@ -226,13 +228,7 @@ mod tests {
 
         assert_eq!(
             labels,
-            vec![
-                "stock_info",
-                "kline_5m",
-                "kline_1h",
-                "kline_1d",
-                "kline_1w"
-            ]
+            vec!["stock_info", "kline_5m", "kline_1h", "kline_1d", "kline_1w"]
         );
     }
 
@@ -279,6 +275,65 @@ mod tests {
         assert!(prompt.contains("fraud_risk_points"));
         assert!(prompt.contains("radar_scores"));
         assert!(!prompt.contains("raw_sections"));
+    }
+
+    #[test]
+    fn stock_agent_prompt_includes_sentiment_analysis_or_null() {
+        let runtime = runtime_settings();
+        let mut agent_data = StockAgentData::default();
+        agent_data.sentiment_analysis = Some(AiSentimentAnalysisContextDto {
+            total_score: 72,
+            sentiment: crate::models::SentimentDimensionScoreDto {
+                score: 68,
+                reason: "雪球讨论偏正面".into(),
+            },
+            attention: crate::models::SentimentDimensionScoreDto {
+                score: 74,
+                reason: "多平台讨论".into(),
+            },
+            momentum: crate::models::SentimentDimensionScoreDto {
+                score: 61,
+                reason: "近期热度增加".into(),
+            },
+            impact: crate::models::SentimentDimensionScoreDto {
+                score: 70,
+                reason: "涉及业绩".into(),
+            },
+            reliability: crate::models::SentimentDimensionScoreDto {
+                score: 60,
+                reason: "来源一般".into(),
+            },
+            consensus: crate::models::SentimentDimensionScoreDto {
+                score: 78,
+                reason: "观点较一致".into(),
+            },
+        });
+        let mut rows = sample_rows();
+        let row = rows.remove(0);
+
+        let prompt = build_stock_agent_market_prompt(&row, &runtime, &agent_data, None);
+        let value: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+
+        assert_eq!(
+            value
+                .pointer("/stock_context/sentiment_analysis/total_score")
+                .and_then(serde_json::Value::as_u64),
+            Some(72)
+        );
+        assert_eq!(
+            value
+                .pointer("/stock_context/sentiment_analysis/sentiment/reason")
+                .and_then(serde_json::Value::as_str),
+            Some("雪球讨论偏正面")
+        );
+
+        let empty_prompt =
+            build_stock_agent_market_prompt(&row, &runtime, &StockAgentData::default(), None);
+        let empty_value: serde_json::Value = serde_json::from_str(&empty_prompt).unwrap();
+        assert!(empty_value
+            .pointer("/stock_context/sentiment_analysis")
+            .unwrap()
+            .is_null());
     }
 
     #[test]
@@ -587,6 +642,26 @@ mod tests {
                 max_context: 64_000,
                 effort_level: "off".into(),
             },
+            sentiment_analysis_model: ModelUseCaseSettingsDto {
+                temperature: 0.2,
+                max_tokens: 4_096,
+                max_context: 64_000,
+                effort_level: "off".into(),
+            },
+            sentiment_platform_priority: vec![
+                "xueqiu".into(),
+                "zhihu".into(),
+                "weibo".into(),
+                "xiaohongshu".into(),
+                "douyin".into(),
+                "bilibili".into(),
+                "wechat".into(),
+                "baidu".into(),
+                "toutiao".into(),
+            ],
+            sentiment_fetch_recent_days: 30,
+            sentiment_item_max_chars: 420,
+            sentiment_sampling_order: "time_first".into(),
             has_stored_model_api_key: true,
             has_stored_xueqiu_token: false,
             intraday_data_source: crate::models::default_intraday_data_source(),
@@ -615,6 +690,8 @@ mod tests {
             prompt_extension: String::new(),
             assistant_system_prompt: default_assistant_system_prompt(),
             recommendation_system_prompt: String::new(),
+            financial_report_system_prompt: default_financial_report_system_prompt(),
+            sentiment_analysis_system_prompt: default_sentiment_analysis_system_prompt(),
             account_mode: "paper".into(),
             auto_paper_execution: false,
             notifications: RuntimeNotificationSettingsDto {
@@ -728,11 +805,11 @@ use time::OffsetDateTime;
 
 use crate::market::MarketDataService;
 use crate::models::{
-    default_assistant_system_prompt, default_recommendation_system_prompt,
-    AiFinancialReportContextDto, ConnectionTestResultDto, MarketListRow,
-    ModelConnectionTestPayloadDto, ModelUseCaseSettingsDto, RecommendationRunDto,
-    RiskDecisionDto, RuntimeNotificationSettingsDto, RuntimeSettingsDto,
-    SymbolRecommendationDto,
+    default_assistant_system_prompt, default_financial_report_system_prompt,
+    default_recommendation_system_prompt, default_sentiment_analysis_system_prompt,
+    AiFinancialReportContextDto, AiSentimentAnalysisContextDto, ConnectionTestResultDto,
+    MarketListRow, ModelConnectionTestPayloadDto, ModelUseCaseSettingsDto, RecommendationRunDto,
+    RiskDecisionDto, RuntimeNotificationSettingsDto, RuntimeSettingsDto, SymbolRecommendationDto,
 };
 use crate::recommendations::risk_engine::{
     evaluate_plan, risk_settings_from_runtime, CandidatePlan,
@@ -753,6 +830,7 @@ struct StockAgentData {
     stock_info: Value,
     kline_data: PromptKlineContext,
     financial_report_analysis: Option<AiFinancialReportContextDto>,
+    sentiment_analysis: Option<AiSentimentAnalysisContextDto>,
     messages: HashMap<String, String>,
 }
 
@@ -855,6 +933,7 @@ pub async fn generate_trade_plan(
     enabled_exchanges: &[String],
     positions: &[PositionContext],
     financial_analyses: &HashMap<String, AiFinancialReportContextDto>,
+    sentiment_analyses: &HashMap<String, AiSentimentAnalysisContextDto>,
 ) -> anyhow::Result<Vec<GeneratedTradePlan>> {
     if market_rows.is_empty() {
         bail!("No live market data was available for the enabled exchanges.");
@@ -902,6 +981,7 @@ pub async fn generate_trade_plan(
         let decision_rows = decision_rows.clone();
         let recommendation_service = recommendation_service.clone();
         let financial_analysis = financial_analyses.get(&row.symbol).cloned();
+        let sentiment_analysis = sentiment_analyses.get(&row.symbol).cloned();
         let position_context = positions
             .iter()
             .find(|position| position.symbol == row.symbol)
@@ -911,15 +991,22 @@ pub async fn generate_trade_plan(
             let mut agent_data =
                 fetch_stock_agent_data(settings_service, &row.symbol, &runtime).await;
             agent_data.financial_report_analysis = financial_analysis;
+            agent_data.sentiment_analysis = sentiment_analysis;
             let user_prompt = build_stock_agent_market_prompt(
                 &row,
                 &runtime,
                 &agent_data,
                 position_context.as_ref(),
             );
-            let content = call_text_model(&runtime, &runtime.recommendation_model, &api_key, &system_prompt, &user_prompt)
-                .await
-                .map(|value| strip_think_blocks(&value));
+            let content = call_text_model(
+                &runtime,
+                &runtime.recommendation_model,
+                &api_key,
+                &system_prompt,
+                &user_prompt,
+            )
+            .await
+            .map(|value| strip_think_blocks(&value));
             let content = match content {
                 Ok(value) => value,
                 Err(error) => {
@@ -1065,6 +1152,7 @@ pub async fn generate_trade_plan_with_historical_context(
     account_equity_usdt: f64,
     position_context: Option<&PositionContext>,
     financial_report_analysis: Option<AiFinancialReportContextDto>,
+    sentiment_analysis: Option<AiSentimentAnalysisContextDto>,
     stock_info: Value,
     kline_bars: HashMap<String, Vec<[f64; 4]>>,
 ) -> anyhow::Result<GeneratedTradePlan> {
@@ -1077,6 +1165,7 @@ pub async fn generate_trade_plan_with_historical_context(
     let mut agent_data = StockAgentData::default();
     agent_data.stock_info = stock_info;
     agent_data.financial_report_analysis = financial_report_analysis;
+    agent_data.sentiment_analysis = sentiment_analysis;
     for (interval, bars) in kline_bars {
         agent_data.kline_data.bars.insert(
             interval,
@@ -1097,9 +1186,15 @@ pub async fn generate_trade_plan_with_historical_context(
         .insert("source".into(), "历史回测快照，不读取当前行情。".into());
 
     let user_prompt = build_stock_agent_market_prompt(row, &runtime, &agent_data, position_context);
-    let content = call_text_model(&runtime, &runtime.recommendation_model, &api_key, &system_prompt, &user_prompt)
-        .await
-        .map(|value| strip_think_blocks(&value))?;
+    let content = call_text_model(
+        &runtime,
+        &runtime.recommendation_model,
+        &api_key,
+        &system_prompt,
+        &user_prompt,
+    )
+    .await
+    .map(|value| strip_think_blocks(&value))?;
     let parsed = parse_model_recommendation(&content)?;
     let run = normalize_model_recommendation(
         &parsed,
@@ -1136,13 +1231,7 @@ fn symbol_recommendation_from_run(run: &RecommendationRunDto) -> Option<SymbolRe
 }
 
 fn stock_agent_fetch_plan_labels() -> Vec<&'static str> {
-    vec![
-        "stock_info",
-        "kline_5m",
-        "kline_1h",
-        "kline_1d",
-        "kline_1w",
-    ]
+    vec!["stock_info", "kline_5m", "kline_1h", "kline_1d", "kline_1w"]
 }
 
 async fn fetch_stock_agent_data(
@@ -1183,8 +1272,7 @@ async fn fetch_stock_agent_data(
         }
     });
 
-    let (stock_info, kline_results) =
-        tokio::join!(stock_info_task, join_all(kline_tasks));
+    let (stock_info, kline_results) = tokio::join!(stock_info_task, join_all(kline_tasks));
     let mut data = StockAgentData::default();
     data.stock_info = stock_info.value.unwrap_or_else(|| json!({}));
     if let Some(message) = stock_info.message {
@@ -1306,9 +1394,15 @@ pub async fn complete_text(
 
     let runtime = settings_service.get_runtime_settings();
     Ok(Some(
-        call_text_model(&runtime, model_settings, &api_key, system_prompt, user_prompt)
-            .await
-            .map(|value| strip_think_blocks(&value))?,
+        call_text_model(
+            &runtime,
+            model_settings,
+            &api_key,
+            system_prompt,
+            user_prompt,
+        )
+        .await
+        .map(|value| strip_think_blocks(&value))?,
     ))
 }
 
@@ -1476,6 +1570,13 @@ fn build_stock_agent_market_prompt(
                 );
         }
     }
+    stock_context
+        .as_object_mut()
+        .expect("stock context should be an object")
+        .insert(
+            "sentiment_analysis".into(),
+            json!(agent_data.sentiment_analysis),
+        );
     serde_json::to_string(&json!({
         "request_meta": {
             "trigger_type": "manual_or_auto",
@@ -1933,7 +2034,8 @@ async fn call_text_model(
         .model_provider
         .eq_ignore_ascii_case("anthropic-compatible")
     {
-        call_anthropic_compatible(runtime, model_settings, api_key, system_prompt, user_prompt).await
+        call_anthropic_compatible(runtime, model_settings, api_key, system_prompt, user_prompt)
+            .await
     } else {
         call_openai_compatible(runtime, model_settings, api_key, system_prompt, user_prompt).await
     }
@@ -2004,7 +2106,22 @@ fn runtime_from_model_test_payload(payload: &ModelConnectionTestPayloadDto) -> R
         model_base_url: payload.model_base_url.clone(),
         recommendation_model: recommendation_model.clone(),
         assistant_model: recommendation_model.clone(),
-        financial_report_model: recommendation_model,
+        financial_report_model: recommendation_model.clone(),
+        sentiment_analysis_model: recommendation_model,
+        sentiment_platform_priority: vec![
+            "xueqiu".into(),
+            "zhihu".into(),
+            "weibo".into(),
+            "xiaohongshu".into(),
+            "douyin".into(),
+            "bilibili".into(),
+            "wechat".into(),
+            "baidu".into(),
+            "toutiao".into(),
+        ],
+        sentiment_fetch_recent_days: 30,
+        sentiment_item_max_chars: 420,
+        sentiment_sampling_order: "time_first".into(),
         has_stored_model_api_key: !payload.model_api_key.trim().is_empty(),
         has_stored_xueqiu_token: false,
         intraday_data_source: crate::models::default_intraday_data_source(),
@@ -2033,6 +2150,8 @@ fn runtime_from_model_test_payload(payload: &ModelConnectionTestPayloadDto) -> R
         prompt_extension: String::new(),
         assistant_system_prompt: default_assistant_system_prompt(),
         recommendation_system_prompt: default_recommendation_system_prompt(),
+        financial_report_system_prompt: default_financial_report_system_prompt(),
+        sentiment_analysis_system_prompt: default_sentiment_analysis_system_prompt(),
         account_mode: "paper".into(),
         auto_paper_execution: false,
         notifications: RuntimeNotificationSettingsDto {

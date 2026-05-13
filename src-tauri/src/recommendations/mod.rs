@@ -13,8 +13,9 @@ mod tests {
     };
     use crate::market::MarketDataService;
     use crate::models::{
-        default_assistant_system_prompt, default_recommendation_system_prompt, MarketListRow,
-        ModelUseCaseSettingsDto, OhlcvBar, RecommendationRunDto,
+        default_assistant_system_prompt, default_financial_report_system_prompt,
+        default_recommendation_system_prompt, default_sentiment_analysis_system_prompt,
+        MarketListRow, ModelUseCaseSettingsDto, OhlcvBar, RecommendationRunDto,
         RuntimeNotificationSettingsDto, RuntimeSettingsDto,
     };
     use crate::recommendations::ledger::RecommendationEvaluation;
@@ -197,6 +198,26 @@ mod tests {
                 max_context: 64_000,
                 effort_level: "off".into(),
             },
+            sentiment_analysis_model: ModelUseCaseSettingsDto {
+                temperature: 0.2,
+                max_tokens: 4_096,
+                max_context: 64_000,
+                effort_level: "off".into(),
+            },
+            sentiment_platform_priority: vec![
+                "xueqiu".into(),
+                "zhihu".into(),
+                "weibo".into(),
+                "xiaohongshu".into(),
+                "douyin".into(),
+                "bilibili".into(),
+                "wechat".into(),
+                "baidu".into(),
+                "toutiao".into(),
+            ],
+            sentiment_fetch_recent_days: 30,
+            sentiment_item_max_chars: 420,
+            sentiment_sampling_order: "time_first".into(),
             has_stored_model_api_key: false,
             has_stored_xueqiu_token: false,
             intraday_data_source: crate::models::default_intraday_data_source(),
@@ -225,6 +246,8 @@ mod tests {
             prompt_extension: String::new(),
             assistant_system_prompt: default_assistant_system_prompt(),
             recommendation_system_prompt: default_recommendation_system_prompt(),
+            financial_report_system_prompt: default_financial_report_system_prompt(),
+            sentiment_analysis_system_prompt: default_sentiment_analysis_system_prompt(),
             account_mode: "paper".into(),
             auto_paper_execution: false,
             notifications: RuntimeNotificationSettingsDto {
@@ -803,9 +826,9 @@ use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::market::{coin_info, MarketDataService};
 use crate::models::{
-    MarketListRow, OhlcvBar, RecommendationAuditDto,
-    RecommendationGenerationProgressDto, RecommendationGenerationProgressItemDto,
-    RecommendationHistoryRowDto, RecommendationRunDto, RiskDecisionDto, RuntimeSettingsDto,
+    MarketListRow, OhlcvBar, RecommendationAuditDto, RecommendationGenerationProgressDto,
+    RecommendationGenerationProgressItemDto, RecommendationHistoryRowDto, RecommendationRunDto,
+    RiskDecisionDto, RuntimeSettingsDto,
 };
 use evaluator::estimate_pnl_percent;
 use risk_engine::{evaluate_plan, risk_settings_from_runtime, CandidatePlan, RiskSettings};

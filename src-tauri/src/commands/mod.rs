@@ -8,6 +8,7 @@ pub mod market;
 pub mod paper;
 pub mod portfolio;
 pub mod recommendations;
+pub mod sentiment;
 pub mod settings;
 pub mod signals;
 pub mod strategy;

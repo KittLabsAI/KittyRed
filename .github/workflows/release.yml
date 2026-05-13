@@ -1,0 +1,53 @@
+name: Release Desktop Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  bundle-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build bundled Python runtime
+        run: npm run build:python-runtime
+
+      - name: Smoke test bundled Python runtime
+        run: npm run smoke:python-runtime
+
+      - name: Build desktop bundle
+        run: npm run tauri build
+
+      - name: Upload macOS bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kittyred-macos-bundle
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app

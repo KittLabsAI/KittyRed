@@ -6,6 +6,15 @@ import {
   getFinancialReportFetchProgress,
   getFinancialReportOverview,
   getFinancialReportSnapshot,
+  getSentimentAnalysisProgress,
+  getSentimentAnalysisResults,
+  getSentimentDiscussionSnapshot,
+  getSentimentFetchProgress,
+  getSentimentPlatformAuthStatuses,
+  testSentimentPlatformConnections,
+  captureSentimentPlatformLoginState,
+  startSentimentAnalysis,
+  startSentimentDiscussionFetch,
   listArbitrageOpportunities,
   startRecommendationGeneration,
   startFinancialReportAnalysis,
@@ -110,16 +119,18 @@ describe("financial report tauri bridge", () => {
     });
   });
 
-  it("invokes financial report fetch and cancel commands without stock selection", async () => {
+  it("invokes financial report fetch and cancel commands with selected watchlist symbols", async () => {
     mocks.invoke.mockResolvedValue(undefined);
 
     await startFinancialReportFetch();
     await cancelFinancialReportFetch();
-    await startFinancialReportAnalysis();
+    await startFinancialReportAnalysis(["SHSE.600000"]);
 
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "start_financial_report_fetch");
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "cancel_financial_report_fetch");
-    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "start_financial_report_analysis");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "start_financial_report_analysis", {
+      selectedSymbols: ["SHSE.600000"],
+    });
   });
 
   it("reads financial report progress, overview, snapshot, and cached analysis", async () => {
@@ -186,6 +197,141 @@ describe("financial report tauri bridge", () => {
   });
 });
 
+describe("sentiment analysis tauri bridge", () => {
+  beforeEach(() => {
+    mocks.invoke.mockReset();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+  });
+
+  it("invokes sentiment commands and maps backend payloads without secret values", async () => {
+    mocks.invoke
+      .mockResolvedValueOnce([
+        {
+          platform: "zhihu",
+          hasLoginState: true,
+          capturedAt: "2026-05-12T10:00:00+08:00",
+        },
+      ])
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([{ platform: "zhihu", ok: true, message: "知乎 连接测试可用" }])
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        status: "running",
+        completedCount: 1,
+        totalCount: 9,
+        message: "正在拉取社媒平台讨论",
+        items: [
+          {
+            stockCode: "SHSE.600000",
+            shortName: "浦发银行",
+            platformStatuses: [
+              { platform: "zhihu", status: "succeeded", itemCount: 2, errorMessage: null },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        stockCode: "SHSE.600000",
+        stockName: "浦发银行",
+        sourceRevision: "rev-1",
+        fetchedAt: "2026-05-12T10:00:00+08:00",
+        platformStatuses: [{ platform: "zhihu", status: "succeeded", itemCount: 2, errorMessage: null }],
+        items: [
+          {
+            platform: "zhihu",
+            title: "浦发银行讨论",
+            text: "讨论正文",
+            author: "用户A",
+            publishedAt: "2026-05-12T09:00:00+08:00",
+            url: "https://example.com/1",
+            engagement: { likes: 8 },
+            fetchedAt: "2026-05-12T10:00:00+08:00",
+            raw: { id: "1" },
+          },
+        ],
+      })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({
+        status: "idle",
+        completedCount: 0,
+        totalCount: 0,
+        message: "尚未开始 AI 舆情分析",
+        items: [],
+      })
+      .mockResolvedValueOnce([
+        {
+          stockCode: "SHSE.600000",
+          stockName: "浦发银行",
+          totalScore: 66,
+          sentiment: { score: 62, reason: "雪球讨论偏正面。" },
+          attention: { score: 70, reason: "多平台有讨论。" },
+          momentum: { score: 60, reason: "扩散平稳。" },
+          impact: { score: 68, reason: "涉及业绩。" },
+          reliability: { score: 58, reason: "来源一般。" },
+          consensus: { score: 78, reason: "观点较一致。" },
+          sourceRevision: "rev-1",
+          modelProvider: "openai",
+          modelName: "gpt",
+          generatedAt: "2026-05-12T10:30:00+08:00",
+        },
+      ]);
+
+    const authStatuses = await getSentimentPlatformAuthStatuses();
+    expect(authStatuses).toEqual([
+      { platform: "zhihu", hasLoginState: true, capturedAt: "2026-05-12T10:00:00+08:00" },
+    ]);
+    await captureSentimentPlatformLoginState("zhihu");
+    await expect(testSentimentPlatformConnections()).resolves.toEqual([
+      { platform: "zhihu", ok: true, message: "知乎 连接测试可用" },
+    ]);
+    await startSentimentDiscussionFetch(["SHSE.600000"]);
+    await expect(getSentimentFetchProgress()).resolves.toMatchObject({
+      completedCount: 1,
+      items: [{ stockCode: "SHSE.600000" }],
+    });
+    await expect(getSentimentDiscussionSnapshot("SHSE.600000")).resolves.toMatchObject({
+      stockCode: "SHSE.600000",
+      items: [{ platform: "zhihu", text: "讨论正文" }],
+    });
+    await startSentimentAnalysis(["SHSE.600000"]);
+    await expect(getSentimentAnalysisProgress()).resolves.toMatchObject({
+      status: "idle",
+      message: "尚未开始 AI 舆情分析",
+    });
+    await expect(getSentimentAnalysisResults()).resolves.toMatchObject([
+      {
+        stockCode: "SHSE.600000",
+        totalScore: 66,
+        sentiment: { score: 62 },
+      },
+    ]);
+
+    const serializedStatuses = JSON.stringify(authStatuses);
+    expect(serializedStatuses).not.toContain("cookie");
+    expect(serializedStatuses).not.toContain("secret");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "get_sentiment_platform_auth_statuses");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "capture_sentiment_platform_login_state", {
+      platform: "zhihu",
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "test_sentiment_platform_connections");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(4, "start_sentiment_discussion_fetch", {
+      selectedSymbols: ["SHSE.600000"],
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(5, "get_sentiment_fetch_progress");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(6, "get_sentiment_discussion_snapshot", {
+      stockCode: "SHSE.600000",
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(7, "start_sentiment_analysis", {
+      selectedSymbols: ["SHSE.600000"],
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(8, "get_sentiment_analysis_progress");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(9, "get_sentiment_analysis_results");
+  });
+});
+
 describe("recommendation tauri bridge", () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
@@ -214,7 +360,7 @@ describe("recommendation tauri bridge", () => {
         ],
       });
 
-    await startRecommendationGeneration();
+    await startRecommendationGeneration(["SHSE.600000", "SZSE.000001"]);
     await expect(getRecommendationGenerationProgress()).resolves.toEqual({
       status: "running",
       completedCount: 1,
@@ -231,7 +377,9 @@ describe("recommendation tauri bridge", () => {
       ],
     });
 
-    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "start_recommendation_generation");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "start_recommendation_generation", {
+      selectedSymbols: ["SHSE.600000", "SZSE.000001"],
+    });
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "get_recommendation_generation_progress");
   });
 });

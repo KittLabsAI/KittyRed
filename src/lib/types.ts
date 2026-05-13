@@ -512,6 +512,97 @@ export interface FinancialReportAnalysisProgress {
   items: FinancialReportAnalysisProgressItem[];
 }
 
+export interface SentimentPlatformAuthStatus {
+  platform: string;
+  hasLoginState: boolean;
+  capturedAt?: string | null;
+}
+
+export interface SentimentPlatformConnectionTestResult {
+  platform: string;
+  ok: boolean;
+  message: string;
+}
+
+export interface SentimentPlatformFetchStatus {
+  platform: string;
+  status: string;
+  itemCount: number;
+  errorMessage?: string | null;
+}
+
+export interface SentimentDiscussionItem {
+  platform: string;
+  title?: string | null;
+  text: string;
+  author?: string | null;
+  publishedAt?: string | null;
+  url?: string | null;
+  engagement: Record<string, unknown>;
+  fetchedAt: string;
+  raw: Record<string, unknown>;
+}
+
+export interface SentimentDiscussionSnapshot {
+  stockCode: string;
+  stockName?: string | null;
+  sourceRevision: string;
+  items: SentimentDiscussionItem[];
+  platformStatuses: SentimentPlatformFetchStatus[];
+  fetchedAt: string;
+}
+
+export interface SentimentFetchProgressItem {
+  stockCode: string;
+  shortName: string;
+  platformStatuses: SentimentPlatformFetchStatus[];
+}
+
+export interface SentimentFetchProgress {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: SentimentFetchProgressItem[];
+}
+
+export interface SentimentAnalysisProgressItem {
+  stockCode: string;
+  shortName: string;
+  status: string;
+  attempt: number;
+  errorMessage?: string | null;
+}
+
+export interface SentimentAnalysisProgress {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: SentimentAnalysisProgressItem[];
+}
+
+export interface SentimentDimensionScore {
+  score: number;
+  reason: string;
+}
+
+export interface SentimentAnalysisResult {
+  stockCode: string;
+  stockName?: string | null;
+  totalScore: number;
+  sentiment: SentimentDimensionScore;
+  attention: SentimentDimensionScore;
+  momentum: SentimentDimensionScore;
+  impact: SentimentDimensionScore;
+  reliability: SentimentDimensionScore;
+  consensus: SentimentDimensionScore;
+  sourceRevision: string;
+  modelProvider?: string | null;
+  modelName?: string | null;
+  generatedAt: string;
+}
+
 export interface BacktestRun {
   backtestId: string;
   datasetId: string;

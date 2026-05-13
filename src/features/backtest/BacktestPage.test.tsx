@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BacktestPage } from "./BacktestPage";
 import * as tauri from "../../lib/tauri";
 
@@ -31,6 +31,8 @@ const {
   startGenerateBacktestSignalsMock,
   startReplayBacktestMock,
   startFetchSnapshotsMock,
+  getFinancialReportAnalysisMock,
+  getSentimentAnalysisResultsMock,
 } = vi.hoisted(() => ({
   createBacktestDatasetMock: vi.fn(async () => ({
     datasetId: "dataset-2",
@@ -72,6 +74,13 @@ const {
   startGenerateBacktestSignalsMock: vi.fn(async () => undefined),
   startReplayBacktestMock: vi.fn(async () => undefined),
   startFetchSnapshotsMock: vi.fn(async () => undefined),
+  getFinancialReportAnalysisMock: vi.fn(
+    async (symbol: string): Promise<{ stockCode: string } | null> => ({ stockCode: symbol }),
+  ),
+  getSentimentAnalysisResultsMock: vi.fn(async () => [
+    { stockCode: "SHSE.600000" },
+    { stockCode: "SZSE.000001" },
+  ]),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -157,6 +166,8 @@ vi.mock("../../lib/tauri", () => ({
   ]),
   deleteBacktestDataset: vi.fn(async () => undefined),
   createBacktest: createBacktestMock,
+  getFinancialReportAnalysis: getFinancialReportAnalysisMock,
+  getSentimentAnalysisResults: getSentimentAnalysisResultsMock,
   startBacktest: startGenerateBacktestSignalsMock,
   startGenerateBacktestSignals: startGenerateBacktestSignalsMock,
   startReplayBacktest: startReplayBacktestMock,
@@ -263,6 +274,16 @@ function renderPage() {
 }
 
 describe("BacktestPage", () => {
+  beforeEach(() => {
+    createBacktestMock.mockClear();
+    startGenerateBacktestSignalsMock.mockClear();
+    getFinancialReportAnalysisMock.mockImplementation(async (symbol: string) => ({ stockCode: symbol }));
+    getSentimentAnalysisResultsMock.mockResolvedValue([
+      { stockCode: "SHSE.600000" },
+      { stockCode: "SZSE.000001" },
+    ]);
+  });
+
   it("renders the Chinese four-step backtest workflow", async () => {
     renderPage();
 
@@ -293,8 +314,36 @@ describe("BacktestPage", () => {
 
     await user.click(screen.getByRole("tab", { name: "生成AI信号" }));
     await user.click(screen.getByRole("button", { name: "生成AI信号" }));
+    expect(await screen.findByRole("dialog", { name: "选择参与 AI 回测信号生成的股票" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开始生成AI信号" }));
     await waitFor(() => expect(createBacktestMock).toHaveBeenCalled());
-    expect(startGenerateBacktestSignalsMock).toHaveBeenCalledWith("bt-2");
+    expect(startGenerateBacktestSignalsMock).toHaveBeenCalledWith("bt-2", ["SHSE.600000", "SZSE.000001"]);
+  });
+
+  it("asks for confirmation when selected stocks miss financial or sentiment analysis before generating signals", async () => {
+    const user = userEvent.setup();
+    getFinancialReportAnalysisMock.mockImplementation(
+      async (symbol: string): Promise<{ stockCode: string } | null> =>
+        symbol === "SHSE.600000" ? { stockCode: symbol } : null,
+    );
+    getSentimentAnalysisResultsMock.mockResolvedValueOnce([{ stockCode: "SZSE.000001" }]);
+    renderPage();
+
+    await user.click(await screen.findByRole("tab", { name: "生成AI信号" }));
+    await user.click(screen.getByRole("button", { name: "生成AI信号" }));
+    await user.click(screen.getByRole("button", { name: "开始生成AI信号" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "确认继续生成 AI 信号？" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText("浦发银行")).toBeInTheDocument();
+    expect(within(dialog).getByText("缺少 AI舆情分析")).toBeInTheDocument();
+    expect(within(dialog).getByText("平安银行")).toBeInTheDocument();
+    expect(within(dialog).getByText("缺少 AI财报分析")).toBeInTheDocument();
+    expect(createBacktestMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "继续分析" }));
+    await waitFor(() => expect(createBacktestMock).toHaveBeenCalled());
+    expect(startGenerateBacktestSignalsMock).toHaveBeenCalledWith("bt-2", ["SHSE.600000", "SZSE.000001"]);
   });
 
   it("shows fetch progress and completed failure records", async () => {

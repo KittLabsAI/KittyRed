@@ -38,6 +38,12 @@ import type {
   RiskDecision,
   RecommendationRun,
   ScanRunHistoryPage,
+  SentimentAnalysisResult,
+  SentimentAnalysisProgress,
+  SentimentDiscussionSnapshot,
+  SentimentFetchProgress,
+  SentimentPlatformAuthStatus,
+  SentimentPlatformConnectionTestResult,
   SignalHistoryPage,
   SpreadOpportunity,
   StrategyConfig,
@@ -381,6 +387,60 @@ type FinancialReportAnalysisProgressDto = {
   totalCount: number;
   message: string;
   items: FinancialReportAnalysisProgressItemDto[];
+};
+
+type SentimentPlatformFetchStatusDto = {
+  platform: string;
+  status: string;
+  itemCount: number;
+  errorMessage?: string | null;
+};
+
+type SentimentFetchProgressDto = {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: Array<{
+    stockCode: string;
+    shortName: string;
+    platformStatuses: SentimentPlatformFetchStatusDto[];
+  }>;
+};
+
+type SentimentAnalysisProgressDto = {
+  status: string;
+  completedCount: number;
+  totalCount: number;
+  message: string;
+  items: Array<{
+    stockCode: string;
+    shortName: string;
+    status: string;
+    attempt: number;
+    errorMessage?: string | null;
+  }>;
+};
+
+type SentimentDimensionScoreDto = {
+  score: number;
+  reason: string;
+};
+
+type SentimentAnalysisDto = {
+  stockCode: string;
+  stockName?: string | null;
+  totalScore: number;
+  sentiment: SentimentDimensionScoreDto;
+  attention: SentimentDimensionScoreDto;
+  momentum: SentimentDimensionScoreDto;
+  impact: SentimentDimensionScoreDto;
+  reliability: SentimentDimensionScoreDto;
+  consensus: SentimentDimensionScoreDto;
+  sourceRevision: string;
+  modelProvider?: string | null;
+  modelName?: string | null;
+  generatedAt: string;
 };
 
 type BacktestDatasetDto = {
@@ -1573,12 +1633,12 @@ export async function triggerRecommendation(symbol?: string): Promise<Recommenda
   return dto.map(mapRecommendation);
 }
 
-export async function startRecommendationGeneration(): Promise<void> {
+export async function startRecommendationGeneration(selectedSymbols: string[]): Promise<void> {
   if (!isTauriRuntime()) {
     return;
   }
 
-  await invoke("start_recommendation_generation");
+  await invoke("start_recommendation_generation", { selectedSymbols });
 }
 
 export async function getRecommendationGenerationProgress(): Promise<RecommendationGenerationProgress> {
@@ -1773,9 +1833,9 @@ export async function startBacktest(backtestId: string): Promise<void> {
   await invoke("start_backtest", { backtestId });
 }
 
-export async function startGenerateBacktestSignals(backtestId: string): Promise<void> {
+export async function startGenerateBacktestSignals(backtestId: string, selectedSymbols: string[]): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke("start_generate_backtest_signals", { backtestId });
+  await invoke("start_generate_backtest_signals", { backtestId, selectedSymbols });
 }
 
 export async function startReplayBacktest(backtestId: string): Promise<void> {
@@ -2474,7 +2534,116 @@ export async function getFinancialReportAnalysisProgress(): Promise<FinancialRep
   };
 }
 
-export async function startFinancialReportAnalysis(): Promise<void> {
+export async function startFinancialReportAnalysis(selectedSymbols: string[]): Promise<void> {
   if (!isTauriRuntime()) return;
-  await invoke<void>("start_financial_report_analysis");
+  await invoke<void>("start_financial_report_analysis", { selectedSymbols });
+}
+
+export async function getSentimentPlatformAuthStatuses(): Promise<SentimentPlatformAuthStatus[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<SentimentPlatformAuthStatus[]>("get_sentiment_platform_auth_statuses");
+}
+
+export async function captureSentimentPlatformLoginState(platform: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("capture_sentiment_platform_login_state", { platform });
+}
+
+export async function testSentimentPlatformConnections(): Promise<SentimentPlatformConnectionTestResult[]> {
+  if (!isTauriRuntime()) {
+    return [
+      { platform: "weibo", ok: true, message: "微博 连接测试可用" },
+      { platform: "xiaohongshu", ok: true, message: "小红书 连接测试可用" },
+      { platform: "bilibili", ok: true, message: "B站 连接测试可用" },
+      { platform: "zhihu", ok: true, message: "知乎 连接测试可用" },
+      { platform: "douyin", ok: true, message: "抖音 连接测试可用" },
+      { platform: "wechat", ok: true, message: "微信公众号 连接测试可用" },
+      { platform: "baidu", ok: true, message: "百度 连接测试可用" },
+      { platform: "toutiao", ok: true, message: "今日头条 连接测试可用" },
+      { platform: "xueqiu", ok: true, message: "雪球 连接测试可用" },
+    ];
+  }
+  return invoke<SentimentPlatformConnectionTestResult[]>("test_sentiment_platform_connections");
+}
+
+export async function startSentimentDiscussionFetch(selectedSymbols: string[]): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("start_sentiment_discussion_fetch", { selectedSymbols });
+}
+
+export async function cancelSentimentDiscussionFetch(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("cancel_sentiment_discussion_fetch");
+}
+
+export async function getSentimentFetchProgress(): Promise<SentimentFetchProgress> {
+  if (!isTauriRuntime()) {
+    return {
+      status: "idle",
+      completedCount: 0,
+      totalCount: 0,
+      message: "本地预览未启动社媒平台讨论拉取",
+      items: [],
+    };
+  }
+  const dto = await invoke<SentimentFetchProgressDto>("get_sentiment_fetch_progress");
+  return {
+    status: dto.status,
+    completedCount: dto.completedCount,
+    totalCount: dto.totalCount,
+    message: dto.message,
+    items: dto.items.map((item) => ({
+      stockCode: item.stockCode,
+      shortName: item.shortName,
+      platformStatuses: item.platformStatuses.map((status) => ({
+        platform: status.platform,
+        status: status.status,
+        itemCount: status.itemCount,
+        errorMessage: status.errorMessage ?? null,
+      })),
+    })),
+  };
+}
+
+export async function getSentimentDiscussionSnapshot(
+  stockCode: string,
+): Promise<SentimentDiscussionSnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  return invoke<SentimentDiscussionSnapshot | null>("get_sentiment_discussion_snapshot", { stockCode });
+}
+
+export async function startSentimentAnalysis(selectedSymbols: string[]): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke<void>("start_sentiment_analysis", { selectedSymbols });
+}
+
+export async function getSentimentAnalysisProgress(): Promise<SentimentAnalysisProgress> {
+  if (!isTauriRuntime()) {
+    return {
+      status: "idle",
+      completedCount: 0,
+      totalCount: 0,
+      message: "尚未开始 AI 舆情分析",
+      items: [],
+    };
+  }
+  const dto = await invoke<SentimentAnalysisProgressDto>("get_sentiment_analysis_progress");
+  return {
+    status: dto.status,
+    completedCount: dto.completedCount,
+    totalCount: dto.totalCount,
+    message: dto.message,
+    items: dto.items.map((item) => ({
+      stockCode: item.stockCode,
+      shortName: item.shortName,
+      status: item.status,
+      attempt: item.attempt,
+      errorMessage: item.errorMessage ?? null,
+    })),
+  };
+}
+
+export async function getSentimentAnalysisResults(): Promise<SentimentAnalysisResult[]> {
+  if (!isTauriRuntime()) return [];
+  return invoke<SentimentAnalysisDto[]>("get_sentiment_analysis_results");
 }

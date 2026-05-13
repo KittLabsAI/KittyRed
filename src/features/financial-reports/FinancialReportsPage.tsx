@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as echarts from "echarts";
 import { BarChart3, Check, ChevronDown, Circle, CircleAlert, FileText, RefreshCw, Square, Wand2, X, X as XIcon } from "lucide-react";
+import { WatchlistSelectionModal } from "../../components/WatchlistSelectionModal";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import {
@@ -10,6 +11,7 @@ import {
   getFinancialReportFetchProgress,
   getFinancialReportOverview,
   getFinancialReportSnapshot,
+  listMarkets,
   startFinancialReportAnalysis,
   startFinancialReportFetch,
 } from "../../lib/tauri";
@@ -34,10 +36,15 @@ function sortByScore(analyses: FinancialReportAnalysis[]) {
 export function FinancialReportsPage() {
   const queryClient = useQueryClient();
   const [activeStockCode, setActiveStockCode] = useState<string | null>(null);
+  const [selectionOpen, setSelectionOpen] = useState(false);
 
   const overviewQuery = useQuery({
     queryKey: ["financial-report-overview"],
     queryFn: getFinancialReportOverview,
+  });
+  const watchlistQuery = useQuery({
+    queryKey: ["financial-report-watchlist"],
+    queryFn: listMarkets,
   });
   const progressQuery = useQuery({
     queryKey: ["financial-report-progress"],
@@ -69,7 +76,7 @@ export function FinancialReportsPage() {
     },
   });
   const analyzeMutation = useMutation({
-    mutationFn: startFinancialReportAnalysis,
+    mutationFn: (selectedSymbols: string[]) => startFinancialReportAnalysis(selectedSymbols),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["financial-report-analysis-progress"] });
       await queryClient.invalidateQueries({ queryKey: ["financial-report-overview"] });
@@ -86,6 +93,7 @@ export function FinancialReportsPage() {
   const analyses = useMemo(() => sortByScore(overview?.analyses ?? []), [overview?.analyses]);
   const rowsCount = overview?.rowCount ?? 0;
   const snapshot = detailQuery.data;
+  const watchlistRows = watchlistQuery.data ?? [];
 
   useEffect(() => {
     if (!activeStockCode) return;
@@ -129,12 +137,12 @@ export function FinancialReportsPage() {
               </Button>
               <Button
                 disabled={rowsCount === 0 || analyzeMutation.isPending}
-                onClick={() => analyzeMutation.mutate()}
+                onClick={() => setSelectionOpen(true)}
                 type="button"
                 variant="ghost"
               >
                 <Wand2 size={16} />
-                分析自选股票池财报
+                AI财报分析
               </Button>
             </div>
           </div>
@@ -268,6 +276,18 @@ export function FinancialReportsPage() {
           snapshot={snapshot}
         />
       ) : null}
+      <WatchlistSelectionModal
+        confirmLabel="开始财报分析"
+        description="从当前自选股池中勾选要进入本次 AI 财报分析的股票。"
+        onClose={() => setSelectionOpen(false)}
+        onConfirm={(symbols) => {
+          setSelectionOpen(false);
+          analyzeMutation.mutate(symbols);
+        }}
+        open={selectionOpen}
+        title="选择参与财报 AI 分析的股票"
+        watchlist={watchlistRows}
+      />
     </section>
   );
 }
@@ -419,16 +439,19 @@ function RadarChart({
   scores: FinancialReportAnalysis["radarScores"];
 }) {
   const labels = [
-    { key: "profitability", label: "盈利性" },
-    { key: "authenticity", label: "真实性" },
-    { key: "cashGeneration", label: "造血力" },
-    { key: "safety", label: "安全性" },
-    { key: "growthPotential", label: "成长性" },
-    { key: "operatingEfficiency", label: "运转效率" },
+    { key: "profitability", label: "盈利性", standard: "净利与回报、毛利水平等盈利表现越强得分越高" },
+    { key: "authenticity", label: "真实性", standard: "盈利调节和资产质量异常越少，财务数据一致性越好得分越高" },
+    { key: "cashGeneration", label: "造血力", standard: "经营现金流、现金流稳定性和利润含金量越强得分越高" },
+    { key: "safety", label: "安全性", standard: "偿债能力越强、负债压力和流动性风险越低得分越高" },
+    { key: "growthPotential", label: "成长性", standard: "业绩增速、研发及资本投入能支撑未来增长时得分越高" },
+    { key: "operatingEfficiency", label: "运转效率", standard: "营运效率、周转表现和资源利用效率越好得分越高" },
   ] as const;
   const option = useMemo(
     () => ({
       backgroundColor: "transparent",
+      tooltip: {
+        show: false,
+      },
       radar: {
         center: ["50%", "52%"],
         radius: "65%",
@@ -464,14 +487,6 @@ function RadarChart({
           max: 10,
         })),
       },
-      tooltip: {
-        trigger: "item",
-        backgroundColor: "rgba(5, 10, 17, 0.96)",
-        borderColor: "rgba(143, 220, 255, 0.24)",
-        textStyle: {
-          color: "#edf3ff",
-        },
-      },
       series: [
         {
           type: "radar",
@@ -498,8 +513,14 @@ function RadarChart({
     }),
     [scores],
   );
+  const hoverItems = labels.map((item) => ({
+    label: item.label,
+    max: 10,
+    score: Number(scores[item.key].toFixed(2)),
+    standard: item.standard,
+  }));
   return (
-    <ChartSurface ariaLabel="财报评分雷达图" className="financial-report-radar" option={option} />
+    <ChartSurface ariaLabel="财报评分雷达图" className="financial-report-radar" option={option} radarHoverItems={hoverItems} />
   );
 }
 
@@ -727,12 +748,19 @@ function ChartSurface({
   ariaLabel,
   className,
   option,
+  radarHoverItems,
 }: {
   ariaLabel: string;
   className: string;
   option: unknown;
+  radarHoverItems?: Array<{ label: string; max: number; score: number; standard: string }>;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [radarTooltip, setRadarTooltip] = useState<{
+    item: { label: string; max: number; score: number; standard: string };
+    x: number;
+    y: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -746,7 +774,43 @@ function ChartSurface({
     };
   }, [option]);
 
-  return <div aria-label={ariaLabel} className={className} ref={containerRef} role="img" />;
+  function handleRadarMouseMove(event: React.MouseEvent<HTMLDivElement>) {
+    if (!radarHoverItems || radarHoverItems.length === 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const centerY = rect.height * 0.52;
+    const angle = Math.atan2(event.clientY - rect.top - centerY, event.clientX - rect.left - centerX);
+    const normalized = (-angle - Math.PI / 2 + Math.PI * 2) % (Math.PI * 2);
+    const index = Math.round((normalized / (Math.PI * 2)) * radarHoverItems.length) % radarHoverItems.length;
+    setRadarTooltip({
+      item: radarHoverItems[index],
+      x: Math.min(rect.width - 180, Math.max(12, event.clientX - rect.left + 12)),
+      y: Math.min(rect.height - 86, Math.max(12, event.clientY - rect.top + 12)),
+    });
+  }
+
+  return (
+    <div
+      aria-label={ariaLabel}
+      className={`${className}${radarHoverItems ? " chart-surface--radar-hover" : ""}`}
+      onMouseLeave={radarHoverItems ? () => setRadarTooltip(null) : undefined}
+      onMouseMove={radarHoverItems ? handleRadarMouseMove : undefined}
+      ref={containerRef}
+      role="img"
+    >
+      {radarTooltip ? (
+        <div
+          aria-label={`${radarTooltip.item.label}评分说明`}
+          className="radar-hover-tooltip"
+          style={{ left: radarTooltip.x, top: radarTooltip.y }}
+        >
+          <strong>{radarTooltip.item.label}</strong>
+          <span>得分：{radarTooltip.item.score}/{radarTooltip.item.max}</span>
+          <p>评分标准：{radarTooltip.item.standard}</p>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function formatFinancialRawValue(key: string, value: unknown) {

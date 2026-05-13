@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Circle, CircleAlert, XIcon } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { WatchlistSelectionModal } from "../../components/WatchlistSelectionModal";
 import { formatCurrency, formatDateTime, formatPercent } from "../../lib/format";
 import {
   deleteRecommendation,
+  getFinancialReportAnalysis,
   getLatestRecommendation,
   getRecommendationGenerationProgress,
   getRecommendationAudit,
+  getSentimentAnalysisResults,
   listMarkets,
   listRecommendationHistory,
   startRecommendationGeneration,
@@ -19,6 +22,13 @@ import type {
   RecommendationHistoryRow,
   RecommendationRun,
 } from "../../lib/types";
+
+type MissingAnalysisRow = {
+  symbol: string;
+  name: string;
+  missingFinancial: boolean;
+  missingSentiment: boolean;
+};
 
 function formatEntryRange(low?: number, high?: number) {
   if (low === undefined && high === undefined) return "无";
@@ -144,6 +154,9 @@ export function RecommendationsPage() {
   const [symbolFilter, setSymbolFilter] = useState("all");
   const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
   const [historyPage, setHistoryPage] = useState(1);
+  const [selectionOpen, setSelectionOpen] = useState(false);
+  const [pendingSymbols, setPendingSymbols] = useState<string[] | null>(null);
+  const [missingAnalyses, setMissingAnalyses] = useState<MissingAnalysisRow[]>([]);
   const lastProgressStatusRef = useRef<string>("idle");
 
   const latestRecommendationQuery = useQuery({
@@ -177,7 +190,7 @@ export function RecommendationsPage() {
     staleTime: 0,
   });
   const triggerRecommendationMutation = useMutation({
-    mutationFn: startRecommendationGeneration,
+    mutationFn: (selectedSymbols: string[]) => startRecommendationGeneration(selectedSymbols),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["recommendation-generation-progress"] });
     },
@@ -247,6 +260,44 @@ export function RecommendationsPage() {
     lastProgressStatusRef.current = nextStatus;
   }, [recommendationProgress?.status, queryClient]);
 
+  async function confirmRecommendationSymbols(symbols: string[]) {
+    const sentimentSymbols = new Set(
+      (await getSentimentAnalysisResults().catch(() => [])).map((item) => item.stockCode),
+    );
+    const financialEntries = await Promise.all(
+      symbols.map(async (symbol) => [symbol, await getFinancialReportAnalysis(symbol).catch(() => null)] as const),
+    );
+    const financialSymbols = new Set(
+      financialEntries
+        .filter(([, analysis]) => analysis !== null)
+        .map(([symbol]) => symbol),
+    );
+    const missing = symbols
+      .map((symbol) => ({
+        symbol,
+        name: stockName(symbol, markets),
+        missingFinancial: !financialSymbols.has(symbol),
+        missingSentiment: !sentimentSymbols.has(symbol),
+      }))
+      .filter((item) => item.missingFinancial || item.missingSentiment);
+    if (missing.length > 0) {
+      setPendingSymbols(symbols);
+      setMissingAnalyses(missing);
+      return;
+    }
+    setSelectionOpen(false);
+    triggerRecommendationMutation.mutate(symbols);
+  }
+
+  function continueRecommendationGeneration() {
+    if (!pendingSymbols) return;
+    const symbols = pendingSymbols;
+    setPendingSymbols(null);
+    setMissingAnalyses([]);
+    setSelectionOpen(false);
+    triggerRecommendationMutation.mutate(symbols);
+  }
+
   return (
     <section className="page-stack">
       <section className="hero-panel recommendation-hero-panel">
@@ -264,7 +315,7 @@ export function RecommendationsPage() {
             <button
               className="sidebar__button"
               disabled={triggerRecommendationMutation.isPending}
-              onClick={() => triggerRecommendationMutation.mutate()}
+              onClick={() => setSelectionOpen(true)}
               type="button"
             >
               {triggerRecommendationMutation.isPending ? "生成中..." : "生成AI建议"}
@@ -482,7 +533,77 @@ export function RecommendationsPage() {
           onClose={() => setSelectedAuditId(null)}
         />
       ) : null}
+      <WatchlistSelectionModal
+        confirmLabel="开始生成AI建议"
+        description="从当前自选股池中勾选要进入本次 AI 建议分析的股票。"
+        onClose={() => setSelectionOpen(false)}
+        onConfirm={(symbols) => void confirmRecommendationSymbols(symbols)}
+        open={selectionOpen}
+        title="选择参与 AI 建议分析的股票"
+        watchlist={markets}
+      />
+      {missingAnalyses.length > 0 ? (
+        <MissingAnalysisConfirmModal
+          items={missingAnalyses}
+          onCancel={() => {
+            setPendingSymbols(null);
+            setMissingAnalyses([]);
+          }}
+          onConfirm={continueRecommendationGeneration}
+          title="确认继续生成 AI 建议？"
+        />
+      ) : null}
     </section>
+  );
+}
+
+function MissingAnalysisConfirmModal({
+  items,
+  onCancel,
+  onConfirm,
+  title,
+}: {
+  items: MissingAnalysisRow[];
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+}) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <section
+        aria-label={title}
+        aria-modal="true"
+        className="modal-content analysis-missing-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="modal-header">
+          <div>
+            <p className="section-label">分析数据缺失</p>
+            <h2>{title}</h2>
+            <p className="panel__meta">以下股票缺少 AI财报分析或 AI舆情分析结果，继续后 LLM 将收到空值。</p>
+          </div>
+        </div>
+        <div className="analysis-missing-list">
+          {items.map((item) => (
+            <div key={item.symbol}>
+              <strong>{item.name}</strong>
+              <span>{item.symbol}</span>
+              <em>
+                {[
+                  item.missingFinancial ? "缺少 AI财报分析" : null,
+                  item.missingSentiment ? "缺少 AI舆情分析" : null,
+                ].filter(Boolean).join("、")}
+              </em>
+            </div>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button className="ghost-button" onClick={onCancel} type="button">取消</button>
+          <button className="sidebar__button" onClick={onConfirm} type="button">继续分析</button>
+        </div>
+      </section>
+    </div>
   );
 }
 

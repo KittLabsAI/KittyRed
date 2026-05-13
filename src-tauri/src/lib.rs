@@ -14,9 +14,12 @@ mod models;
 mod notifications;
 mod paper;
 mod portfolio;
+mod python;
 mod recommendations;
+mod sentiment;
 mod settings;
 mod signals;
+mod watchlist_selection;
 
 use app_state::AppState;
 use tauri::Manager;
@@ -97,6 +100,16 @@ pub fn run() {
             commands::financial_reports::get_financial_report_analysis,
             commands::financial_reports::get_financial_report_analysis_progress,
             commands::financial_reports::start_financial_report_analysis,
+            commands::sentiment::get_sentiment_platform_auth_statuses,
+            commands::sentiment::capture_sentiment_platform_login_state,
+            commands::sentiment::start_sentiment_discussion_fetch,
+            commands::sentiment::cancel_sentiment_discussion_fetch,
+            commands::sentiment::get_sentiment_fetch_progress,
+            commands::sentiment::get_sentiment_discussion_snapshot,
+            commands::sentiment::start_sentiment_analysis,
+            commands::sentiment::get_sentiment_analysis_progress,
+            commands::sentiment::get_sentiment_analysis_results,
+            commands::sentiment::test_sentiment_platform_connections,
             commands::signals::scan_signals,
             commands::signals::list_signal_history,
             commands::signals::execute_signal,
