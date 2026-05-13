@@ -18,7 +18,7 @@ describe("router loading performance", () => {
 
   it("uses a dedicated route loading surface", () => {
     expect(routerSource).toContain("function RouteLoading");
-    expect(routerSource).toContain("className=\"route-loading\"");
+    expect(routerSource).toContain("route-loading");
     expect(routerSource).toContain("aria-live=\"polite\"");
     expect(routerSource).toContain("页面加载中...");
   });

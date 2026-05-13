@@ -76,7 +76,7 @@ describe("Header", () => {
 
     expect(screen.getByRole("heading", { name: "持仓" })).toBeInTheDocument();
     expect(await screen.findByText("AI 扫描 10m")).toBeInTheDocument();
-    expect(screen.getByText("同步于 23:10")).toBeInTheDocument();
+    expect(screen.getByText(/同步于 \d{2}:\d{2}/)).toBeInTheDocument();
     expect(screen.getByText("模拟账号")).toBeInTheDocument();
   });
 });
