@@ -8,6 +8,11 @@ import akshare as ak
 
 from backend.akshare_adapter import AkshareAdapter
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 
 def handle_request(
     payload: dict[str, Any],
